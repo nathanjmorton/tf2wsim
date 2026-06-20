@@ -8,7 +8,8 @@
   "type": "commonjs",
   "scripts": {
     "test": "node test/run.test.js",
-    "quickstart": "bash scripts/quickstart.sh"
+    "quickstart": "bash scripts/quickstart.sh",
+    "builder": "bash scripts/builder.sh"
   },
   "dependencies": {
     "@winglang/sdk": "0.85.49",

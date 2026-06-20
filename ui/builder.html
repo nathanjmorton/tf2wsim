@@ -48,6 +48,8 @@
   .toast.err { border-color:#ef4444; }
   code { background:var(--bg); padding:1px 5px; border-radius:4px; font-size:12px; }
   pre.tf { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:10px; font-size:11px; max-height:240px; overflow:auto; white-space:pre-wrap; }
+  .spin { display:inline-block; color:var(--accent); animation:pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.3} 50%{opacity:1} }
 </style>
 </head>
 <body>
@@ -57,7 +59,8 @@
     <span class="sp"></span>
     <span id="target" class="hint"></span>
     <button id="clear">Clear</button>
-    <button id="generate" class="primary">Generate Terraform</button>
+    <button id="generate">Generate Terraform</button>
+    <button id="launch" class="primary">Init &amp; Open Console</button>
   </header>
 
   <aside class="palette">
@@ -280,10 +283,12 @@ document.getElementById("clear").addEventListener("click", ()=>{
   document.querySelectorAll(".node").forEach(el=>el.remove());
   drawEdges(); select(null);
 });
+function currentSpec(){
+  return { nodes: state.nodes.map(n=>({ id:n.id, type:n.type, name:n.name, props:n.props, code:n.code })), edges: state.edges };
+}
 document.getElementById("generate").addEventListener("click", async ()=>{
-  const spec = { nodes: state.nodes.map(n=>({ id:n.id, type:n.type, name:n.name, props:n.props, code:n.code })), edges: state.edges };
   try {
-    const r = await fetch("/api/generate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(spec) });
+    const r = await fetch("/api/generate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(currentSpec()) });
     const data = await r.json();
     if (!data.ok) return toast("Error: "+data.error, true);
     let msg = `Wrote ${data.written.length} file(s) to ${data.outDir}`;
@@ -292,6 +297,60 @@ document.getElementById("generate").addEventListener("click", async ()=>{
     showTf(data.mainTf, data.warnings);
   } catch(err){ toast("Error: "+err.message, true); }
 });
+
+// ---- one-click: generate -> terraform init -> launch Console -> open ----
+const launchBtn = document.getElementById("launch");
+let pollTimer = null;
+launchBtn.addEventListener("click", async ()=>{
+  if (!state.nodes.length) return toast("Add at least one node first.", true);
+  launchBtn.disabled = true;
+  const orig = launchBtn.textContent;
+  try {
+    const r = await fetch("/api/launch", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(currentSpec()) });
+    const data = await r.json();
+    if (!data.ok) { toast("Error: "+(data.error||"launch failed"), true); launchBtn.disabled=false; launchBtn.textContent=orig; return; }
+    showLaunchProgress();
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollLaunch, 800);
+    pollLaunch();
+  } catch(err){ toast("Error: "+err.message, true); launchBtn.disabled=false; launchBtn.textContent=orig; }
+});
+
+const PHASE_LABEL = {
+  generating: "Generating Terraform…",
+  "terraform init": "Running terraform init (downloading providers — first time can take a minute)…",
+  "starting console": "Starting the Wing Console…",
+  ready: "Ready",
+  error: "Problem",
+  idle: "…",
+};
+function showLaunchProgress(extra){
+  inspector.empty.style.display="none"; inspector.body.style.display="";
+  inspector.body.innerHTML = `<h2 style="margin-top:0">Init &amp; Open Console</h2><div id="launch-status" class="hint">Starting…</div>`;
+  if (extra) document.getElementById("launch-status").innerHTML = extra;
+}
+async function pollLaunch(){
+  let s;
+  try { s = await (await fetch("/api/launch/status")).json(); }
+  catch { return; }
+  const el = document.getElementById("launch-status");
+  if (!el) return;
+  if (s.phase === "ready" && s.url){
+    clearInterval(pollTimer); pollTimer=null;
+    launchBtn.disabled=false; launchBtn.textContent="Init & Open Console";
+    el.innerHTML = `✓ Console ready — ${s.started||""} resources started.<br><br>` +
+      `<a href="${s.url}" target="_blank" style="color:var(--accent2);font-weight:600">Open the Console ↗</a>`;
+    toast("Console is ready.");
+    // best-effort auto-open in a new tab
+    window.open(s.url, "_blank");
+  } else if (s.phase === "error"){
+    clearInterval(pollTimer); pollTimer=null;
+    launchBtn.disabled=false; launchBtn.textContent="Init & Open Console";
+    el.innerHTML = `<span style="color:#fca5a5">${escapeHtml(PHASE_LABEL.error)}:</span><br><pre class="tf">${escapeHtml(s.error||"unknown")}</pre>`;
+  } else {
+    el.innerHTML = `<span class="spin">●</span> ${escapeHtml(PHASE_LABEL[s.phase] || s.phase)}`;
+  }
+}
 function showTf(tf, warnings){
   inspector.empty.style.display="none"; inspector.body.style.display="";
   inspector.body.innerHTML = `<h2 style="margin-top:0">Generated main.tf</h2>` +

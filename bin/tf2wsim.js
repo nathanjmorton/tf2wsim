@@ -40,6 +40,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "-o" || a === "--out") args.out = argv[++i];
     else if (a === "-p" || a === "--port") args.port = parseInt(argv[++i], 10);
+    else if (a === "--console-port") args.consolePort = parseInt(argv[++i], 10);
     else if (a === "--json") args.json = argv[++i];
     else args._.push(a);
   }
@@ -149,13 +150,13 @@ async function cmdBuilder(args) {
   const { startBuilder } = require("../src/builder");
   const outDir = path.resolve(args._[0] || "./tf-project");
   const port = args.port || 3100;
+  const consolePort = args.consolePort || 3000;
   fs.mkdirSync(outDir, { recursive: true });
-  const { port: actual } = await startBuilder({ outDir, port });
+  const { port: actual } = await startBuilder({ outDir, port, consolePort });
   console.log(`\u2713 tf2wsim builder`);
   console.log(`  target dir: ${outDir}`);
   console.log(`  open: http://localhost:${actual}/`);
-  console.log(`  Build a graph, click "Generate Terraform", then run:`);
-  console.log(`    tf2wsim console ${outDir}`);
+  console.log(`  Drag a graph, then click "Init & Open Console" to simulate it.`);
   process.stdin.resume();
 }
 

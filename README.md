@@ -15,7 +15,20 @@ the unmodified `@winglang/sdk` Simulator can open and run.
 ## Quickstart
 
 Prerequisites: **Node.js 18+**, **Terraform**, and **unzip** on your `PATH`.
-Then copy-paste this into a terminal:
+
+**Build infrastructure visually** — drag-and-drop a graph, then one click runs
+`terraform init` + the Console (no terminal beyond this):
+
+```bash
+git clone https://github.com/nathanjmorton/tf2wsim.git && cd tf2wsim && npm run builder
+```
+
+Open **http://localhost:3100/**, drag Queue/Function/Bucket nodes onto the
+canvas, wire an edge from a publisher to a function, then click **Init & Open
+Console** — it generates the Terraform, initializes it, starts the simulator,
+and opens the Console once everything is running.
+
+**Or run the prebuilt example** straight in the Console:
 
 ```bash
 git clone https://github.com/nathanjmorton/tf2wsim.git && cd tf2wsim && npm run quickstart
@@ -109,18 +122,31 @@ to wire a trigger, and edit each Function's handler **inline** (or upload a
 standalone `.js`/`.mjs` file). The default handler takes the event and returns
 an editable default result.
 
-Clicking **Generate Terraform** writes `main.tf` plus one `src/<name>.js` per
-function into the target directory — which then flows through the same pipeline:
+Two buttons:
+
+- **Generate Terraform** writes `main.tf` plus one `src/<name>.js` per function
+  into the target directory (and previews the generated `main.tf`).
+- **Init & Open Console** does the whole loop for you — generate →
+  `terraform init` (first time only) → start the Wing Console on the project →
+  open it in a new tab once the simulator is up. The inspector shows live
+  progress through each phase, and surfaces any `terraform` error inline.
+
+Start it from the CLI or the script:
 
 ```bash
-node bin/tf2wsim.js builder ./my-project -p 3100   # author visually -> writes main.tf
-cd my-project && terraform init                     # one-time provider download
-node ../bin/tf2wsim.js console .                     # simulate what you drew
+npm run builder                          # installs deps, opens the builder on :3100
+# or directly:
+node bin/tf2wsim.js builder ./my-project -p 3100 --console-port 3000
 ```
 
-The builder is a small self-contained HTML canvas (`ui/builder.html`) served by
-`src/builder.js`; generation logic lives in `src/generate.js` and is mapper-for-
-mapper symmetric with the resource table above.
+The launched Console runs as a child process and is torn down when you stop the
+builder. The builder is a self-contained HTML canvas (`ui/builder.html`) served
+by `src/builder.js`; generation logic lives in `src/generate.js` and is
+mapper-for-mapper symmetric with the resource table above.
+
+> On an exe.dev VM, reach the builder at `https://<vm>.exe.xyz:3100/` and the
+> launched Console at `https://<vm>.exe.xyz:3000/` — the "Open the Console" link
+> is rewritten to the proxy host automatically.
 
 ## The Console
 
@@ -210,6 +236,8 @@ src/
   constants.js  Wing type FQN / classname / inflight-file tables
 ui/builder.html the drag-and-drop canvas (vanilla JS, self-contained)
 bin/tf2wsim.js  CLI (build / run / console / builder)
+scripts/quickstart.sh  install + run the example in the Console (npm run quickstart)
+scripts/builder.sh     install + open the drag-and-drop builder (npm run builder)
 ```
 
 ## License
