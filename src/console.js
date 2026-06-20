@@ -162,6 +162,23 @@ function patchCompiler() {
   };
 }
 
+// The Console derives its file watcher's root from `path.dirname(wingfile)` and
+// ignores `<that dir>/target/**`. If we hand it a *directory*, dirname() points
+// at the parent and our `target/console.wsim` output is no longer ignored — the
+// watcher then re-triggers compile on every synth, looping forever. So always
+// resolve a directory entrypoint to a file that lives *inside* the tf dir.
+function resolveWingfile(entrypoint) {
+  const ep = path.resolve(entrypoint);
+  const stat = fs.existsSync(ep) ? fs.statSync(ep) : null;
+  if (stat && stat.isDirectory()) {
+    const tf = fs.readdirSync(ep).find((f) => f.endsWith(".tf"));
+    // A real .tf file is ideal (watcher reacts to edits); otherwise a stable
+    // sentinel path inside the dir keeps dirname() pointing at the tf dir.
+    return path.join(ep, tf || "main.tf");
+  }
+  return ep;
+}
+
 async function startConsole({ entrypoint, port }) {
   patchCompiler();
   // Require AFTER patching so the Console's bundle picks up our compiler proxy.
@@ -169,7 +186,7 @@ async function startConsole({ entrypoint, port }) {
   process.env.NO_SIGN_IN = process.env.NO_SIGN_IN || "true";
   process.env.WING_DISABLE_ANALYTICS = process.env.WING_DISABLE_ANALYTICS || "1";
   const server = await createConsoleApp({
-    wingfile: path.resolve(entrypoint),
+    wingfile: resolveWingfile(entrypoint),
     requestedPort: port,
     requireSignIn: false,
     requireAcceptTerms: false,

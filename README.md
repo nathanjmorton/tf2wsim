@@ -12,6 +12,23 @@ the unmodified `@winglang/sdk` Simulator can open and run.
   main.tf ──terraform plan──▶ plan.json ──tf2wsim──▶ out.wsim ──▶ Wing Simulator / Console
 ```
 
+## Quickstart
+
+Prerequisites: **Node.js 18+**, **Terraform**, and **unzip** on your `PATH`.
+Then copy-paste this into a terminal:
+
+```bash
+git clone https://github.com/nathanjmorton/tf2wsim.git && cd tf2wsim && npm run quickstart
+```
+
+That installs dependencies, initializes the example Terraform project in
+`examples/basic` (an SQS → Lambda app), and launches the Wing Console on it.
+Open **http://localhost:3000/** and you'll see the resource tree and the live
+map graph with the event edge from `aws_sqs_queue.work` to
+`aws_lambda_function.processor`. Push a message to the queue from its panel to
+watch the Lambda fire. Press `Ctrl-C` to stop; set `PORT=4000` to use a
+different port.
+
 ## Why this works
 
 The Wing SDK already separates the *language* from the *simulator* via a file
