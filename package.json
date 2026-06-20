@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node test/run.test.js",
     "quickstart": "bash scripts/quickstart.sh",
-    "builder": "bash scripts/builder.sh"
+    "builder": "bash scripts/builder.sh",
+    "example:upload": "bash scripts/example-upload.sh"
   },
   "dependencies": {
     "@winglang/sdk": "0.85.49",

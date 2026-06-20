@@ -221,6 +221,7 @@ async function startConsole({ entrypoint, port }) {
   process.env.NO_SIGN_IN = process.env.NO_SIGN_IN || "true";
   process.env.WING_DISABLE_ANALYTICS = process.env.WING_DISABLE_ANALYTICS || "1";
   const { mountBridge } = require("./bridge");
+  let selfPort = port; // updated once the server reports its actual port
   const server = await createConsoleApp({
     wingfile: resolveWingfile(entrypoint),
     requestedPort: port,
@@ -229,12 +230,13 @@ async function startConsole({ entrypoint, port }) {
     hostUtils: {
       async openExternal() {},
     },
-    // Mount our browser-reachable bridge (upload form + sim-Api proxy) on the
-    // Console's own express server.
+    // Mount our browser-reachable bridge (upload form + sim-Api/Website proxy)
+    // on the Console's own express server.
     onExpressCreated(app) {
-      mountBridge(app, getLastWsimDir);
+      mountBridge(app, getLastWsimDir, () => selfPort);
     },
   });
+  selfPort = server.port;
 
   // Release the simulator lock cleanly on exit so the next run isn't blocked.
   // server.close() stops the simulator (and thus releases its lockfile), but it

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Image Upload · S3 website</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:28px;width:440px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  h1{font-size:18px;margin:0 0 4px}
+  p.sub{color:#94a3b8;margin:0 0 18px;font-size:13px}
+  .drop{border:2px dashed #334155;border-radius:10px;padding:26px;text-align:center;color:#94a3b8;font-size:13px;cursor:pointer}
+  .drop.over{border-color:#38bdf8;color:#e2e8f0}
+  img#preview{margin-top:14px;max-width:100%;border-radius:8px;display:none}
+  button{margin-top:16px;width:100%;background:#38bdf8;color:#06283d;border:none;border-radius:8px;padding:11px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5}
+  pre{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;margin-top:14px;max-height:160px;overflow:auto}
+  .ok{color:#22c55e}.err{color:#f87171}
+  .tag{display:inline-block;background:#334155;border-radius:5px;padding:1px 7px;font-size:11px;color:#cbd5e1}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Upload an image</h1>
+  <p class="sub">Served from an <span class="tag">S3 website bucket</span> → posts to a
+    <span class="tag">Lambda Function URL</span> → validated → stored in
+    <span class="tag">S3</span>.</p>
+  <div class="drop" id="drop">Drop an image here, or click to choose
+    <input id="file" type="file" accept="image/*" style="display:none"/></div>
+  <img id="preview"/>
+  <button id="send" disabled>Upload</button>
+  <pre id="out" style="display:none"></pre>
+</div>
+<script>
+// The S3 website and the Lambda Function URL are separate sim resources on
+// different ephemeral ports. In the simulator we reach the function URL via the
+// tf2wsim bridge mounted on the Console (proxy-reachable). The bridge forwards
+// /tf2wsim/call/<apiName>/<path> to the running sim Api. The function-URL Api is
+// named after the aws_lambda_function_url resource: "aws_lambda_function_url.upload".
+const API = "aws_lambda_function_url.upload";
+const BRIDGE = location.origin + "/tf2wsim/call/" + API;
+const $ = id => document.getElementById(id);
+let file = null;
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+["dragenter","dragover"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop", ev=>{ if(ev.dataTransfer.files[0]) setFile(ev.dataTransfer.files[0]); });
+$("file").onchange = e => { if(e.target.files[0]) setFile(e.target.files[0]); };
+function setFile(f){ file=f; $("preview").src=URL.createObjectURL(f); $("preview").style.display="block"; $("send").disabled=false; drop.firstChild.textContent=f.name; }
+$("send").onclick = async () => {
+  if(!file) return;
+  $("send").disabled=true; $("send").textContent="Uploading…";
+  const dataBase64 = await new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.readAsDataURL(file);});
+  const out=$("out"); out.style.display="block"; out.textContent="…";
+  try{
+    const r = await fetch(BRIDGE + "/", { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({ filename:file.name, contentType:file.type, dataBase64 }) });
+    const text = await r.text();
+    out.className = r.ok ? "ok" : "err";
+    out.textContent = "HTTP " + r.status + "\n" + text;
+  }catch(e){ out.className="err"; out.textContent=String(e); }
+  $("send").disabled=false; $("send").textContent="Upload";
+};
+</script>
+</body>
+</html>

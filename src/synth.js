@@ -8,6 +8,8 @@ const { mapResource } = require("./mappers");
 const { resolveHandler } = require("./resolver");
 const { applyWiring } = require("./wiring");
 const { applyCapabilities } = require("./capabilities");
+const { applyFunctionUrls } = require("./funcurl");
+const { applyWebsites } = require("./website");
 const { discoverEdges } = require("./edges");
 const { addrFor } = require("./tokens");
 const {
@@ -78,6 +80,36 @@ function synth({ tfJson, outDir, tfDir, sdkLibDir }) {
   // 2. Wire Function -> Bucket capabilities (env handles + storage policies).
   applyCapabilities({ resources, tfResources, addressToPath, refs });
 
+  // 2b. Lambda Function URLs become synthetic single-route Apis (path-form edges).
+  const urlEdges = applyFunctionUrls({
+    resources,
+    tfResources,
+    addressToPath,
+    refs,
+    pathFor,
+    addrFor,
+  });
+  // 2c. S3 static website hosting -> cloud.Website (materializes objects).
+  const { consumedObjects } = applyWebsites({
+    resources,
+    tfResources,
+    addressToPath,
+    refs,
+    outDir,
+    tfDir,
+    pathFor,
+    addrFor,
+  });
+
+  // Resources consumed into synthetic Apis/Websites were not really skipped:
+  // funcurl/website set addressToPath for the resources they absorbed, and
+  // website also reports the aws_s3_object files it materialized.
+  const consumed = new Set(consumedObjects);
+  for (let i = skipped.length - 1; i >= 0; i--) {
+    const addr = skipped[i].address;
+    if (addressToPath[addr] || consumed.has(addr)) skipped.splice(i, 1);
+  }
+
   // 3. Discover event-source edges from the TF graph (raw TF addresses).
   const rawEdges = discoverEdges(tfResources, refs);
   // translate addresses -> wing paths (preserving any per-edge route metadata)
@@ -87,7 +119,8 @@ function synth({ tfJson, outDir, tfDir, sdkLibDir }) {
       subscriberPath: addressToPath[e.subscriber],
       route: e.route,
     }))
-    .filter((e) => e.publisherPath && e.subscriberPath);
+    .filter((e) => e.publisherPath && e.subscriberPath)
+    .concat(urlEdges);
 
   // 4. Synthesize EventMappings + publisher policies.
   const mappings = applyWiring(edges, resources);

@@ -68,6 +68,8 @@ Terraform.
 | `aws_sns_topic` | `cloud.Topic` |
 | `aws_secretsmanager_secret` | `cloud.Secret` |
 | `aws_apigatewayv2_api` (HTTP API) | `cloud.Api` |
+| `aws_lambda_function_url` | synthetic `cloud.Api` (catch-all route to the function) |
+| `aws_s3_bucket_website_configuration` (+ `aws_s3_object`) | `cloud.Website` (static files materialized) |
 
 ### Event wiring (reconstructed from the TF graph)
 
@@ -221,26 +223,44 @@ order-processor received: {"messages":[{ "payload":"{\"orderId\":7,...}" }]}
 The Queue's panel even shows **Timeout: 45s**, mapped straight from the
 `visibility_timeout_seconds = 45` in the Terraform config.
 
-## Example: image upload (API → Lambda → S3)
+## Example: image upload (website → Function URL → S3)
 
-`examples/upload` is a real, useful end-to-end flow: an HTTP API Gateway routes
-`POST /upload` to a Lambda that validates the request (image type, size limit)
-and stores the image in an S3 bucket — all defined in Terraform, all simulated.
+`examples/website-upload` is a real, useful end-to-end flow defined entirely in
+Terraform and run entirely in the simulator:
+
+1. an **S3 website bucket** serves an upload form (`aws_s3_object` → served by
+   `cloud.Website`),
+2. the form posts to a **Lambda Function URL** (`aws_lambda_function_url` → a
+   synthetic `cloud.Api`),
+3. the **Lambda validates** the request (image type + size limit) and
+4. **stores the image** in an S3 storage bucket.
+
+Run it with one command:
 
 ```bash
-cd examples/upload && terraform init
-node ../../bin/tf2wsim.js console .
+npm run example:upload
 ```
 
-Then open the built-in upload form and drop in an image:
+When the Console is ready, open the form (served from the simulated website
+bucket, via the bridge below):
 
 ```
-http://localhost:3000/tf2wsim/upload
+http://localhost:3000/tf2wsim/site/aws_s3_bucket_website_configuration.site/
 ```
 
-The image flows **browser form → simulated API Gateway → validator Lambda → S3
-bucket**, and the stored file appears in the Console's Bucket panel (where you
-can preview/download it). Non-image uploads are rejected with `415`.
+Drop in an image — it flows **website → Function URL → validator Lambda → S3** and
+appears in the Console's Bucket panel (preview/download). Non-image uploads are
+rejected with `415`.
+
+> `examples/upload` is the simpler API-Gateway variant of the same flow, with a
+> built-in form at `/tf2wsim/upload`.
+
+### Lambda Function URLs
+
+A `aws_lambda_function_url` is a direct HTTPS endpoint for one function — no API
+Gateway, no routes, no integrations. tf2wsim maps it to a synthetic `cloud.Api`
+with a catch-all route bound to that function, so it's **one Terraform resource
+instead of three** (`api` + `integration` + `route`) for the common case.
 
 ### The browser bridge
 
@@ -255,9 +275,12 @@ server (via `onExpressCreated`):
 | `GET /tf2wsim/upload` | serves the built-in upload form |
 | `GET /tf2wsim/apis` | lists running sim Apis (+ their live URLs) |
 | `ALL /tf2wsim/call/<apiName>/<path>` | forwards a browser request to that sim Api |
+| `GET /tf2wsim/sites` | lists running sim Websites (+ proxy URLs) |
+| `ALL /tf2wsim/site/<name>/<path>` | proxies the sim Website (so the browser can load it) |
 
 The bridge finds a running Api's port from its sim state
-(`<wsim>/.state/<addr>/state.json`). See `src/bridge.js`.
+(`<wsim>/.state/<addr>/state.json`), and a Website's live URL via the Console's
+own `website.url` tRPC endpoint. See `src/bridge.js`.
 
 ## Lambda handler resolution
 
@@ -284,7 +307,9 @@ src/
   edges.js      discover event-source wiring from the TF graph
   wiring.js     edges -> sim.EventMapping resources + publisher policies
   capabilities.js Function -> Bucket access (handle env vars + storage policies)
-  bridge.js     browser-reachable upload form + sim-Api proxy (mounted on Console)
+  funcurl.js    aws_lambda_function_url -> synthetic single-route cloud.Api
+  website.js    S3 website hosting -> cloud.Website (materializes aws_s3_object files)
+  bridge.js     browser-reachable upload form + sim-Api/Website proxy (mounted on Console)
   resolver.js   lambda zip -> runnable JS handler shim
   synth.js      orchestrates the above -> .wsim directory
   console.js    boots the Wing Console (compiler intercept, progress, lock reclaim)

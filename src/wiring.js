@@ -29,16 +29,20 @@ const PUBLISHER_SPEC = {
     grants: ["invoke"],
   },
   // The sim Api subscribes a function to one or more HTTP routes. The route
-  // (method + path) rides along on the edge from edges.js.
+  // (method + path) rides along on the edge from edges.js. The sim Api maps a
+  // route's method to an express handler (app[method]), and there is no "any"
+  // method on express, so an "ANY" route (e.g. a Lambda Function URL catch-all)
+  // is expanded into one subscription per concrete HTTP method.
   [WING_TYPES.API]: {
-    subProps: (edge) => ({
-      routes: [
-        {
-          method: (edge.route && edge.route.method) || "ANY",
-          pathPattern: (edge.route && edge.route.pathPattern) || "/",
-        },
-      ],
-    }),
+    subProps: (edge) => {
+      const method = ((edge.route && edge.route.method) || "ANY").toUpperCase();
+      const pathPattern = (edge.route && edge.route.pathPattern) || "/";
+      const methods =
+        method === "ANY"
+          ? ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+          : [method];
+      return { routes: methods.map((m) => ({ method: m, pathPattern })) };
+    },
     grants: ["invoke"],
   },
 };

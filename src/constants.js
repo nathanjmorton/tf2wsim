@@ -15,6 +15,7 @@ module.exports.WING_TYPES = {
   SCHEDULE: "@winglang/sdk.cloud.Schedule",
   API: "@winglang/sdk.cloud.Api",
   SECRET: "@winglang/sdk.cloud.Secret",
+  WEBSITE: "@winglang/sdk.cloud.Website",
   EVENT_MAPPING: "@winglang/sdk.sim.EventMapping",
 };
 
@@ -27,6 +28,7 @@ module.exports.WING_CLASSNAMES = {
   "@winglang/sdk.cloud.Schedule": "Schedule",
   "@winglang/sdk.cloud.Api": "Api",
   "@winglang/sdk.cloud.Secret": "Secret",
+  "@winglang/sdk.cloud.Website": "Website",
   "@winglang/sdk.sim.EventMapping": "EventMapping",
 };
 
@@ -39,5 +41,6 @@ module.exports.WING_INFLIGHT_FILE = {
   "@winglang/sdk.cloud.Schedule": "schedule.inflight",
   "@winglang/sdk.cloud.Api": "api.inflight",
   "@winglang/sdk.cloud.Secret": "secret.inflight",
+  "@winglang/sdk.cloud.Website": "website.inflight",
   "@winglang/sdk.sim.EventMapping": "event-mapping.inflight",
 };

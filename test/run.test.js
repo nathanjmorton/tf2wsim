@@ -121,6 +121,32 @@ async function main() {
       assert.deepStrictEqual(edges[0].route, { method: "POST", pathPattern: "/upload" });
     });
 
+    await test("maps aws_lambda_function_url to a synthetic Api with ANY route", () => {
+      const { synth } = require("../src/synth");
+      // build a tiny in-memory plan with a function + function url
+      // (synth needs a real handler zip, so we just check edge synthesis here)
+      const { applyFunctionUrls } = require("../src/funcurl");
+      const fnPath = "root/Default/aws_lambda_function.f";
+      const resources = {
+        [fnPath]: { type: WING_TYPES.FUNCTION, path: fnPath, props: {} },
+      };
+      const tfResources = [
+        { address: "aws_lambda_function.f", type: "aws_lambda_function", name: "f", values: {} },
+        { address: "aws_lambda_function_url.f", type: "aws_lambda_function_url", name: "f", values: { cors: [{ allow_origins: ["*"], allow_methods: ["*"] }] } },
+      ];
+      const addressToPath = { "aws_lambda_function.f": fnPath };
+      const refs = { "aws_lambda_function_url.f": { function_name: ["aws_lambda_function.f"] } };
+      const edges = applyFunctionUrls({
+        resources, tfResources, addressToPath, refs,
+        pathFor: (a) => "root/Default/" + a,
+        addrFor: (p) => "c8" + Buffer.from(p).toString("hex").slice(0, 30).padEnd(30, "0"),
+      });
+      const apiPath = "root/Default/aws_lambda_function_url.f";
+      assert.strictEqual(resources[apiPath].type, WING_TYPES.API, "function url -> Api");
+      assert.strictEqual(edges.length, 1);
+      assert.strictEqual(edges[0].route.method, "ANY");
+    });
+
     await test("grants a function bucket access when it references a bucket", () => {
       const fnPath = "root/Default/aws_lambda_function.f";
       const bucketPath = "root/Default/aws_s3_bucket.b";
@@ -268,6 +294,54 @@ async function main() {
         const bucketPath = sim.listResources().find((p) => p.includes("s3_bucket"));
         const list = await sim.getResource(bucketPath).list();
         assert.strictEqual(list.length, 1, "exactly one (valid) image should be stored");
+      } finally {
+        await sim.stop();
+      }
+    });
+  }
+
+  const siteDir = path.join(__dirname, "..", "examples", "website-upload");
+  const sitePlan = path.join(siteDir, "plan.json");
+  if (fs.existsSync(sitePlan)) {
+    const http = require("http");
+    const get = (url) =>
+      new Promise((resolve, reject) => {
+        const u = new URL(url);
+        http.get({ hostname: u.hostname, port: u.port, path: u.pathname || "/" }, (res) => {
+          let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve({ status: res.statusCode, body: d }));
+        }).on("error", reject);
+      });
+    const post = (base, p, body) =>
+      new Promise((resolve, reject) => {
+        const u = new URL(base);
+        const r = http.request({ hostname: u.hostname, port: u.port, path: p, method: "POST", headers: { "content-type": "application/json" } },
+          (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve({ status: res.statusCode, body: d })); });
+        r.on("error", reject); r.write(body); r.end();
+      });
+
+    await test("website-upload example: site serves form, function URL stores image", async () => {
+      const { simulator } = require("@winglang/sdk");
+      const tfJson = JSON.parse(fs.readFileSync(sitePlan, "utf8"));
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "wsim-site-"));
+      synth({ tfJson, outDir, tfDir: siteDir, sdkLibDir: sdkLibDir() });
+      const sim = new simulator.Simulator({ simfile: outDir });
+      await sim.start();
+      try {
+        const sitePath = sim.listResources().find((p) => p.includes("website_configuration"));
+        const siteUrl = sim.getResourceConfig(sitePath).attrs.url;
+        const page = await get(siteUrl + "/");
+        assert.strictEqual(page.status, 200);
+        assert.ok(/Upload an image/.test(page.body), "website should serve the upload form");
+
+        const apiPath = sim.listResources().find((p) => p.includes("function_url"));
+        const apiUrl = sim.getResourceConfig(apiPath).attrs.url;
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        const up = await post(apiUrl, "/", JSON.stringify({ filename: "x.png", contentType: "image/png", dataBase64: png }));
+        assert.strictEqual(up.status, 200, `function URL upload should 200: ${up.body}`);
+
+        const storagePath = sim.listResources().find((p) => p.includes("s3_bucket.storage"));
+        const list = await sim.getResource(storagePath).list();
+        assert.strictEqual(list.length, 1, "image should be stored");
       } finally {
         await sim.stop();
       }

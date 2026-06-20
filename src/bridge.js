@@ -36,6 +36,43 @@ function discoverApis(wsimDir) {
   return out;
 }
 
+// List Website resource paths from the manifest. Their live URL is a runtime
+// attribute (not on disk), so we resolve it lazily via the Console's own tRPC
+// `website.url` endpoint at request time (see websiteUrl below).
+function websitePaths(wsimDir) {
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(wsimDir, "simulator.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  return Object.entries(manifest.resources || {})
+    .filter(([, def]) => def.type === "@winglang/sdk.cloud.Website")
+    .map(([rpath]) => ({ path: rpath, name: rpath.split("/").pop() }));
+}
+
+// Ask the Console's own server (on `selfPort`) for a Website's live URL.
+function websiteUrl(selfPort, resourcePath) {
+  return new Promise((resolve) => {
+    const input = encodeURIComponent(JSON.stringify({ resourcePath }));
+    http
+      .get({ host: "127.0.0.1", port: selfPort, path: `/trpc/website.url?input=${input}`, timeout: 3000 }, (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => {
+          try {
+            const url = JSON.parse(d).result.data;
+            resolve(url || null);
+          } catch {
+            resolve(null);
+          }
+        });
+      })
+      .on("error", () => resolve(null))
+      .on("timeout", function () { this.destroy(); resolve(null); });
+  });
+}
+
 function forward(apiUrl, method, routePath, headers, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(apiUrl);
@@ -68,11 +105,44 @@ function readBody(req) {
 }
 
 // Mount the bridge routes on the Console's express app. `getWsimDir` returns the
-// current .wsim directory (it can change across reloads).
-function mountBridge(app, getWsimDir) {
+// current .wsim directory (it can change across reloads). `getSelfPort` returns
+// the Console's own listening port (used to resolve Website URLs via tRPC).
+function mountBridge(app, getWsimDir, getSelfPort) {
   // List the running APIs (for the form's dropdown).
   app.get("/tf2wsim/apis", (req, res) => {
     res.json({ apis: discoverApis(getWsimDir()) });
+  });
+
+  // List running Websites with their (proxied) browser-reachable URLs.
+  app.get("/tf2wsim/sites", async (req, res) => {
+    const sites = websitePaths(getWsimDir());
+    res.json({
+      sites: sites.map((s) => ({ name: s.name, path: s.path, proxy: `/tf2wsim/site/${s.name}/` })),
+    });
+  });
+
+  // Proxy a Website: GET /tf2wsim/site/<name>/<assetPath> -> the sim Website.
+  app.all(/^\/tf2wsim\/site\/([^/]+)(\/.*)?$/, async (req, res) => {
+    const name = req.params[0];
+    const assetPath = req.params[1] || "/";
+    const site = websitePaths(getWsimDir()).find((s) => s.name === name);
+    if (!site) {
+      res.status(404).json({ error: `no website named "${name}"` });
+      return;
+    }
+    const url = await websiteUrl(getSelfPort ? getSelfPort() : 0, site.path);
+    if (!url) {
+      res.status(503).json({ error: `website "${name}" is not running yet` });
+      return;
+    }
+    try {
+      const r = await forward(url, req.method, assetPath, {}, null);
+      res.status(r.status);
+      if (r.headers["content-type"]) res.set("content-type", r.headers["content-type"]);
+      res.send(r.body);
+    } catch (err) {
+      res.status(502).json({ error: String(err.message || err) });
+    }
   });
 
   // Forward a call to a named sim Api: POST /tf2wsim/call/<apiName><routePath>
