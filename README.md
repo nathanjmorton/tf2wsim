@@ -86,9 +86,41 @@ node bin/tf2wsim.js run out.wsim
 node bin/tf2wsim.js console path/to/tfdir -p 3000
 # ...or against a prebuilt plan.json:
 node bin/tf2wsim.js console plan.json -p 3000
+
+# open the drag-and-drop builder to author Terraform visually:
+node bin/tf2wsim.js builder path/to/new-project -p 3100
 ```
 
 See `examples/basic` for an SQS→Lambda example with a real Node handler.
+
+Starting the Console prints a live progress spinner through each phase
+(`terraform plan` → translate → start simulator) and only prints the
+`open: http://localhost:…` line once the simulator's resources are actually
+running — so you never click a half-loaded URL. If `terraform plan` fails (e.g.
+you forgot `terraform init`), the error is surfaced immediately instead of
+hanging.
+
+## The Builder (Terraform from a canvas)
+
+`tf2wsim builder <outdir>` is the inverse of the translator: a drag-and-drop
+canvas that *generates* Terraform. Drag Bucket / Queue / Function / Topic nodes
+onto the canvas, drag from a publisher's right port to a Function's left port
+to wire a trigger, and edit each Function's handler **inline** (or upload a
+standalone `.js`/`.mjs` file). The default handler takes the event and returns
+an editable default result.
+
+Clicking **Generate Terraform** writes `main.tf` plus one `src/<name>.js` per
+function into the target directory — which then flows through the same pipeline:
+
+```bash
+node bin/tf2wsim.js builder ./my-project -p 3100   # author visually -> writes main.tf
+cd my-project && terraform init                     # one-time provider download
+node ../bin/tf2wsim.js console .                     # simulate what you drew
+```
+
+The builder is a small self-contained HTML canvas (`ui/builder.html`) served by
+`src/builder.js`; generation logic lives in `src/generate.js` and is mapper-for-
+mapper symmetric with the resource table above.
 
 ## The Console
 
@@ -171,10 +203,13 @@ src/
   wiring.js     edges -> sim.EventMapping resources + publisher policies
   resolver.js   lambda zip -> runnable JS handler shim
   synth.js      orchestrates the above -> .wsim directory
-  console.js    boots the Wing Console, intercepting @winglang/compiler
+  console.js    boots the Wing Console (compiler intercept, progress, lock reclaim)
+  generate.js   inverse: builder graph -> Terraform config + handler files
+  builder.js    HTTP server hosting the drag-and-drop builder UI
   tokens.js     wsim token + address helpers
   constants.js  Wing type FQN / classname / inflight-file tables
-bin/tf2wsim.js  CLI (build / run)
+ui/builder.html the drag-and-drop canvas (vanilla JS, self-contained)
+bin/tf2wsim.js  CLI (build / run / console / builder)
 ```
 
 ## License

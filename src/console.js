@@ -17,8 +17,18 @@
 const fs = require("fs");
 const path = require("path");
 const Module = require("module");
+const { EventEmitter } = require("events");
 const { execFileSync } = require("child_process");
 const { synth } = require("./synth");
+
+// Progress bus. The compile step (which the Console runs in the background)
+// emits lifecycle events here so the CLI can show the user what's happening
+// while the first `terraform plan` + synth + simulator start runs. Events:
+//   "plan:start"  ()                      terraform plan is about to run
+//   "plan:done"   ()                      plan finished, JSON parsed
+//   "synth:done"  ({resourceCount,edges,skipped})  .wsim written
+//   "compile:error" (Error)               something failed during compile
+const progress = new EventEmitter();
 
 function sdkLibDir() {
   const pkg = require.resolve("@winglang/sdk/package.json");
@@ -99,15 +109,26 @@ function terraformJsonFor(entrypoint) {
   const tfDir = stat && stat.isDirectory() ? ep : path.dirname(ep);
   const planFile = path.join(tfDir, "target", ".tf2wsim.plan");
   fs.mkdirSync(path.join(tfDir, "target"), { recursive: true });
-  execFileSync("terraform", [`-chdir=${tfDir}`, "plan", "-out", "target/.tf2wsim.plan", "-input=false"], {
-    stdio: "inherit",
-  });
+  progress.emit("plan:start");
+  try {
+    // Capture (don't inherit) terraform's verbose output so the CLI can render
+    // a clean progress spinner; surface it only if the plan fails.
+    execFileSync(
+      "terraform",
+      [`-chdir=${tfDir}`, "plan", "-out", "target/.tf2wsim.plan", "-input=false"],
+      { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 128 * 1024 * 1024 }
+    );
+  } catch (e) {
+    const detail = (e.stderr || e.stdout || "").toString().trim();
+    throw new Error(`terraform plan failed${detail ? ":\n" + detail : ""}`);
+  }
   const out = execFileSync(
     "terraform",
     [`-chdir=${tfDir}`, "show", "-json", "target/.tf2wsim.plan"],
     { maxBuffer: 128 * 1024 * 1024 }
   );
   try { fs.unlinkSync(planFile); } catch {}
+  progress.emit("plan:done");
   return { tfJson: JSON.parse(out.toString()), tfDir };
 }
 
@@ -130,12 +151,18 @@ async function tfCompile(entrypoint, options = {}) {
       );
     }
     const res = synth({ tfJson, outDir, tfDir, sdkLibDir: sdkLibDir() });
+    progress.emit("synth:done", {
+      resourceCount: res.resourceCount,
+      edges: res.edges.length,
+      skipped: res.skipped.length,
+    });
     preflightLog(
       `tf2wsim: ${res.resourceCount} resources, ${res.edges.length} event edge(s)` +
         (res.skipped.length ? `, ${res.skipped.length} skipped` : "") + "\n"
     );
     return { outputDir: outDir, wingcErrors: [], preflightError: undefined };
   } catch (err) {
+    progress.emit("compile:error", err);
     return { outputDir: undefined, wingcErrors: [], preflightError: err };
   }
 }
@@ -224,4 +251,60 @@ async function startConsole({ entrypoint, port }) {
   return server;
 }
 
-module.exports = { startConsole, tfCompile, reclaimStaleLock };
+// Poll the running Console until the simulator has actually started its
+// resources (so we only tell the user "open this URL" once the map is live),
+// or until an error/ timeout. Returns { ready, error, started, total }.
+async function waitForReady(port, { timeoutMs = 120000, intervalMs = 500 } = {}) {
+  const http = require("http");
+  const get = (p) =>
+    new Promise((resolve) => {
+      const req = http.get(
+        { host: "127.0.0.1", port, path: p, timeout: 3000 },
+        (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () => {
+            try { resolve(JSON.parse(body)); } catch { resolve(null); }
+          });
+        }
+      );
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+    });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // Surface a compile error immediately rather than waiting out the timeout.
+    const errResp = await get("/trpc/app.error");
+    const errData = errResp && errResp.result && errResp.result.data;
+    if (errData) return { ready: false, error: String(errData) };
+
+    const mapResp = await get("/trpc/app.map");
+    const data = mapResp && mapResp.result && mapResp.result.data;
+    if (data && data.tree) {
+      const children =
+        (data.tree.children &&
+          data.tree.children.Default &&
+          data.tree.children.Default.children) ||
+        {};
+      const states = Object.values(children).map(
+        (c) => c.hierarchichalRunningState
+      );
+      const total = states.length;
+      const started = states.filter((s) => s === "started").length;
+      if (total > 0 && started === total) {
+        return { ready: true, started, total };
+      }
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return { ready: false, error: "timed out waiting for the simulator to start" };
+}
+
+module.exports = {
+  startConsole,
+  tfCompile,
+  reclaimStaleLock,
+  waitForReady,
+  progress,
+};

@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tf2wsim · Terraform Builder</title>
+<style>
+  :root {
+    --bg:#0f172a; --panel:#1e293b; --panel2:#334155; --line:#475569;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#22c55e;
+    --bucket:#f97316; --queue:#10b981; --function:#38bdf8; --topic:#a78bfa;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  #app { display:grid; grid-template-columns:200px 1fr 340px; grid-template-rows:48px 1fr; height:100vh; }
+  header { grid-column:1/4; display:flex; align-items:center; gap:12px; padding:0 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.3px; }
+  header .sp { flex:1; }
+  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel2); color:var(--text); border-radius:6px; padding:6px 12px; }
+  button.primary { background:var(--accent); color:#06283d; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .palette { background:var(--panel); border-right:1px solid var(--line); padding:12px; overflow:auto; }
+  .palette h2 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:4px 0 10px; }
+  .pal-item { display:flex; align-items:center; gap:8px; padding:9px 10px; margin-bottom:8px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); cursor:grab; user-select:none; }
+  .pal-item:active { cursor:grabbing; }
+  .dot { width:12px; height:12px; border-radius:3px; flex:none; }
+  .hint { font-size:11px; color:var(--muted); line-height:1.5; margin-top:14px; }
+  #canvas { position:relative; overflow:hidden; background:
+      radial-gradient(circle at 1px 1px, #1e293b 1px, transparent 0) 0 0/24px 24px var(--bg); }
+  svg.edges { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .node { position:absolute; width:180px; background:var(--panel); border:2px solid var(--line); border-radius:10px; box-shadow:0 4px 14px rgba(0,0,0,.35); user-select:none; }
+  .node .bar { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); cursor:move; border-radius:8px 8px 0 0; }
+  .node .bar .name { background:transparent; border:none; color:var(--text); font:inherit; font-weight:600; width:100%; outline:none; }
+  .node .body { padding:8px 10px; font-size:12px; color:var(--muted); }
+  .node .type { font-size:10px; text-transform:uppercase; letter-spacing:1px; }
+  .node.selected { border-color:var(--accent); }
+  .port { position:absolute; width:14px; height:14px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); cursor:crosshair; }
+  .port.out { right:-8px; top:50%; transform:translateY(-50%); }
+  .port.in  { left:-8px;  top:50%; transform:translateY(-50%); }
+  .node .del { margin-left:auto; cursor:pointer; color:var(--muted); border:none; background:none; font-size:14px; padding:0 2px; }
+  .inspector { background:var(--panel); border-left:1px solid var(--line); padding:14px; overflow:auto; }
+  .inspector h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin:0 0 10px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:11px; color:var(--muted); margin-bottom:4px; }
+  .field input, .field textarea { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px 8px; font:inherit; }
+  .field textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; min-height:200px; resize:vertical; }
+  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:8px; font-size:13px; max-width:70vw; }
+  .toast.err { border-color:#ef4444; }
+  code { background:var(--bg); padding:1px 5px; border-radius:4px; font-size:12px; }
+  pre.tf { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:10px; font-size:11px; max-height:240px; overflow:auto; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>tf2wsim · Terraform Builder</h1>
+    <span class="sp"></span>
+    <span id="target" class="hint"></span>
+    <button id="clear">Clear</button>
+    <button id="generate" class="primary">Generate Terraform</button>
+  </header>
+
+  <aside class="palette">
+    <h2>Drag onto canvas</h2>
+    <div class="pal-item" draggable="true" data-type="bucket"><span class="dot" style="background:var(--bucket)"></span>S3 Bucket</div>
+    <div class="pal-item" draggable="true" data-type="queue"><span class="dot" style="background:var(--queue)"></span>SQS Queue</div>
+    <div class="pal-item" draggable="true" data-type="function"><span class="dot" style="background:var(--function)"></span>Lambda Function</div>
+    <div class="pal-item" draggable="true" data-type="topic"><span class="dot" style="background:var(--topic)"></span>SNS Topic</div>
+    <div class="hint">
+      Drag the ● <b>right port</b> of a Bucket / Queue / Topic onto a Function's
+      ● <b>left port</b> to wire a trigger.<br><br>
+      Click a Function to edit its handler code in the inspector →<br><br>
+      Then <b>Generate Terraform</b> and run <code>tf2wsim console</code> on the target dir.
+    </div>
+  </aside>
+
+  <main id="canvas">
+    <svg class="edges"><defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+      </marker>
+    </defs></svg>
+  </main>
+
+  <aside class="inspector" id="inspector">
+    <h2>Inspector</h2>
+    <div id="insp-empty" class="hint">Select a node to edit its properties.</div>
+    <div id="insp-body" style="display:none"></div>
+  </aside>
+</div>
+<script>
+const TYPES = {
+  bucket:   { label:"S3 Bucket",       color:"var(--bucket)",   pub:true,  fn:false },
+  queue:    { label:"SQS Queue",       color:"var(--queue)",    pub:true,  fn:false },
+  function: { label:"Lambda Function", color:"var(--function)",  pub:false, fn:true  },
+  topic:    { label:"SNS Topic",       color:"var(--topic)",    pub:true,  fn:false },
+};
+
+const state = { nodes: [], edges: [], selected: null, seq: 1 };
+const canvas = document.getElementById("canvas");
+const svg = canvas.querySelector("svg.edges");
+const inspector = { empty: document.getElementById("insp-empty"), body: document.getElementById("insp-body") };
+
+// fetch target dir for the header
+fetch("/api/target").then(r=>r.json()).then(d=>{
+  document.getElementById("target").textContent = "target: " + d.outDir;
+});
+
+// ---- palette drag -> drop onto canvas ----
+document.querySelectorAll(".pal-item").forEach(el=>{
+  el.addEventListener("dragstart", e=>{
+    e.dataTransfer.setData("text/type", el.dataset.type);
+  });
+});
+canvas.addEventListener("dragover", e=>e.preventDefault());
+canvas.addEventListener("drop", e=>{
+  e.preventDefault();
+  const type = e.dataTransfer.getData("text/type");
+  if (!TYPES[type]) return;
+  const r = canvas.getBoundingClientRect();
+  addNode(type, e.clientX - r.left - 90, e.clientY - r.top - 24);
+});
+
+function addNode(type, x, y){
+  const n = { id:"n"+(state.seq++), type, name: defaultName(type), x:Math.max(8,x), y:Math.max(8,y), props:{}, code:"" };
+  state.nodes.push(n);
+  renderNode(n);
+  select(n.id);
+}
+function defaultName(type){
+  const base = { bucket:"Bucket", queue:"Queue", function:"Function", topic:"Topic" }[type];
+  const count = state.nodes.filter(n=>n.type===type).length + 1;
+  return count>1 ? base+count : base;
+}
+
+function renderNode(n){
+  const el = document.createElement("div");
+  el.className = "node"; el.id = "node-"+n.id; el.style.left=n.x+"px"; el.style.top=n.y+"px";
+  el.style.borderColor = TYPES[n.type].color;
+  el.innerHTML = `
+    <div class="bar">
+      <span class="dot" style="background:${TYPES[n.type].color}"></span>
+      <input class="name" value="${escapeHtml(n.name)}" />
+      <button class="del" title="Delete">✕</button>
+    </div>
+    <div class="body"><span class="type">${TYPES[n.type].label}</span></div>
+    ${TYPES[n.type].fn ? '<div class="port in" title="trigger in"></div>' : ''}
+    ${TYPES[n.type].pub ? '<div class="port out" title="drag to a function"></div>' : ''}
+  `;
+  canvas.appendChild(el);
+  // name edit
+  const nameInput = el.querySelector(".name");
+  nameInput.addEventListener("input", ()=>{ n.name = nameInput.value; if(state.selected===n.id) renderInspector(n); });
+  nameInput.addEventListener("mousedown", e=>e.stopPropagation());
+  // delete
+  el.querySelector(".del").addEventListener("click", e=>{ e.stopPropagation(); removeNode(n.id); });
+  // select
+  el.addEventListener("mousedown", ()=>select(n.id));
+  // drag node
+  makeDraggable(el, n);
+  // edge drag from out port
+  const out = el.querySelector(".port.out");
+  if (out) out.addEventListener("mousedown", e=>startEdge(e, n));
+}
+
+function makeDraggable(el, n){
+  const bar = el.querySelector(".bar");
+  bar.addEventListener("mousedown", e=>{
+    if (e.target.classList.contains("name") || e.target.classList.contains("del")) return;
+    e.preventDefault();
+    const sx=e.clientX, sy=e.clientY, ox=n.x, oy=n.y;
+    const move = ev=>{ n.x = Math.max(0, ox+ev.clientX-sx); n.y = Math.max(0, oy+ev.clientY-sy); el.style.left=n.x+"px"; el.style.top=n.y+"px"; drawEdges(); };
+    const up = ()=>{ document.removeEventListener("mousemove",move); document.removeEventListener("mouseup",up); };
+    document.addEventListener("mousemove",move); document.addEventListener("mouseup",up);
+  });
+}
+
+function removeNode(id){
+  state.nodes = state.nodes.filter(n=>n.id!==id);
+  state.edges = state.edges.filter(e=>e.source!==id && e.target!==id);
+  const el = document.getElementById("node-"+id); if(el) el.remove();
+  if (state.selected===id) select(null);
+  drawEdges();
+}
+
+// ---- edge creation ----
+let pending = null;
+function startEdge(e, src){
+  e.preventDefault(); e.stopPropagation();
+  pending = { src, x:e.clientX, y:e.clientY };
+  const move = ev=>{ pending.x=ev.clientX; pending.y=ev.clientY; drawEdges(); };
+  const up = ev=>{
+    document.removeEventListener("mousemove",move); document.removeEventListener("mouseup",up);
+    const tgtEl = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".node");
+    if (tgtEl){
+      const tid = tgtEl.id.replace("node-","");
+      const tgt = state.nodes.find(n=>n.id===tid);
+      if (tgt && tgt.type==="function" && tgt.id!==src.id && !state.edges.some(x=>x.source===src.id&&x.target===tgt.id)){
+        state.edges.push({ source:src.id, target:tgt.id });
+      } else if (tgt && tgt.type!=="function"){
+        toast("Edges must end on a Function.", true);
+      }
+    }
+    pending=null; drawEdges();
+  };
+  document.addEventListener("mousemove",move); document.addEventListener("mouseup",up);
+}
+
+function portPos(node, which){
+  const el = document.getElementById("node-"+node.id);
+  const r = el.getBoundingClientRect(); const c = canvas.getBoundingClientRect();
+  const y = r.top - c.top + r.height/2;
+  return which==="out" ? { x:r.right-c.left, y } : { x:r.left-c.left, y };
+}
+function drawEdges(){
+  const c = canvas.getBoundingClientRect();
+  let paths = "";
+  for (const e of state.edges){
+    const s = state.nodes.find(n=>n.id===e.source), t = state.nodes.find(n=>n.id===e.target);
+    if(!s||!t) continue;
+    const a = portPos(s,"out"), b = portPos(t,"in");
+    paths += edgePath(a,b);
+  }
+  if (pending){
+    const a = portPos(pending.src,"out");
+    const b = { x:pending.x-c.left, y:pending.y-c.top };
+    paths += edgePath(a,b,true);
+  }
+  // keep defs (first child) and replace the rest
+  svg.innerHTML = svg.querySelector("defs").outerHTML + paths;
+}
+function edgePath(a,b,dashed){
+  const dx = Math.max(40, Math.abs(b.x-a.x)/2);
+  const d = `M ${a.x},${a.y} C ${a.x+dx},${a.y} ${b.x-dx},${b.y} ${b.x},${b.y}`;
+  return `<path d="${d}" fill="none" stroke="#94a3b8" stroke-width="2" ${dashed?'stroke-dasharray="5 4"':''} marker-end="url(#arrow)"/>`;
+}
+
+// ---- selection + inspector ----
+canvas.addEventListener("mousedown", e=>{ if(e.target===canvas || e.target===svg) select(null); });
+function select(id){
+  state.selected = id;
+  document.querySelectorAll(".node").forEach(el=>el.classList.remove("selected"));
+  const n = state.nodes.find(x=>x.id===id);
+  if (n){ document.getElementById("node-"+id).classList.add("selected"); renderInspector(n); }
+  else { inspector.empty.style.display=""; inspector.body.style.display="none"; }
+}
+function renderInspector(n){
+  inspector.empty.style.display="none"; inspector.body.style.display="";
+  let html = `<div class="field"><label>Name</label><input id="f-name" value="${escapeHtml(n.name)}"></div>`;
+  if (n.type==="queue"){
+    html += `<div class="field"><label>Visibility timeout (s)</label><input id="f-vis" type="number" value="${n.props.visibilityTimeout||30}"></div>`;
+    html += `<div class="field"><label>Message retention (s)</label><input id="f-ret" type="number" value="${n.props.retention||3600}"></div>`;
+  }
+  if (n.type==="function"){
+    html += `<div class="field"><label>Timeout (s)</label><input id="f-to" type="number" value="${n.props.timeout||30}"></div>`;
+    html += `<div class="field"><label>Handler code (exports.handler)</label><textarea id="f-code" spellcheck="false">${escapeHtml(n.code || defaultCode(n.name))}</textarea></div>`;
+    html += `<div class="hint">Upload an ESM/CJS file: <input id="f-file" type="file" accept=".js,.mjs,.cjs"></div>`;
+  }
+  inspector.body.innerHTML = html;
+  const bind = (id, fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener("input", fn); };
+  bind("f-name", e=>{ n.name=e.target.value; const ni=document.querySelector("#node-"+n.id+" .name"); if(ni) ni.value=n.name; });
+  bind("f-vis", e=>{ n.props.visibilityTimeout=+e.target.value; });
+  bind("f-ret", e=>{ n.props.retention=+e.target.value; });
+  bind("f-to", e=>{ n.props.timeout=+e.target.value; });
+  bind("f-code", e=>{ n.code=e.target.value; });
+  const file = document.getElementById("f-file");
+  if (file) file.addEventListener("change", async e=>{
+    const f = e.target.files[0]; if(!f) return;
+    n.code = await f.text();
+    document.getElementById("f-code").value = n.code;
+  });
+}
+function defaultCode(name){
+  return `// Handler for ${name}. Receives the trigger event and returns a result.\nexports.handler = async (event) => {\n  console.log(${JSON.stringify(name)}, "received:", JSON.stringify(event));\n  return { ok: true };\n};\n`;
+}
+
+// ---- generate ----
+document.getElementById("clear").addEventListener("click", ()=>{
+  state.nodes=[]; state.edges=[]; state.selected=null;
+  document.querySelectorAll(".node").forEach(el=>el.remove());
+  drawEdges(); select(null);
+});
+document.getElementById("generate").addEventListener("click", async ()=>{
+  const spec = { nodes: state.nodes.map(n=>({ id:n.id, type:n.type, name:n.name, props:n.props, code:n.code })), edges: state.edges };
+  try {
+    const r = await fetch("/api/generate", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(spec) });
+    const data = await r.json();
+    if (!data.ok) return toast("Error: "+data.error, true);
+    let msg = `Wrote ${data.written.length} file(s) to ${data.outDir}`;
+    if (data.warnings.length) msg += " — "+data.warnings.length+" warning(s)";
+    toast(msg);
+    showTf(data.mainTf, data.warnings);
+  } catch(err){ toast("Error: "+err.message, true); }
+});
+function showTf(tf, warnings){
+  inspector.empty.style.display="none"; inspector.body.style.display="";
+  inspector.body.innerHTML = `<h2 style="margin-top:0">Generated main.tf</h2>` +
+    (warnings.length ? `<div class="hint" style="color:#fca5a5">${warnings.map(escapeHtml).join("<br>")}</div>` : "") +
+    `<pre class="tf">${escapeHtml(tf)}</pre>` +
+    `<div class="hint">Now run:<br><code>tf2wsim console &lt;target&gt;</code></div>`;
+  state.selected = null;
+  document.querySelectorAll(".node").forEach(el=>el.classList.remove("selected"));
+}
+
+let toastTimer;
+function toast(msg, err){
+  let t = document.querySelector(".toast"); if(t) t.remove();
+  t = document.createElement("div"); t.className="toast"+(err?" err":""); t.textContent=msg;
+  document.body.appendChild(t);
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.remove(), 5000);
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+window.addEventListener("resize", drawEdges);
+</script>
+</body>
+</html>

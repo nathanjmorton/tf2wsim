@@ -93,6 +93,61 @@ async function main() {
     });
   }
 
+  console.log("generate (builder -> terraform):");
+  {
+    const { generate } = require("../src/generate");
+    await test("emits provider, resources, handler, and event wiring", () => {
+      const { files, warnings } = generate({
+        nodes: [
+          { id: "n1", type: "queue", name: "Orders", props: { visibilityTimeout: 45 } },
+          { id: "n2", type: "function", name: "Worker", code: "" },
+          { id: "n3", type: "bucket", name: "Archive" },
+        ],
+        edges: [{ source: "n1", target: "n2" }],
+      });
+      assert.strictEqual(warnings.length, 0);
+      assert.ok(files["main.tf"].includes('resource "aws_sqs_queue" "orders"'));
+      assert.ok(files["main.tf"].includes("visibility_timeout_seconds = 45"));
+      assert.ok(files["main.tf"].includes('resource "aws_lambda_function" "worker"'));
+      assert.ok(files["main.tf"].includes('resource "aws_s3_bucket" "archive"'));
+      assert.ok(files["main.tf"].includes("aws_lambda_event_source_mapping"));
+      assert.ok(files["src/worker.js"].includes("exports.handler"));
+    });
+
+    await test("uses inline handler code when provided", () => {
+      const code = "exports.handler = async () => ({ custom: true });\n";
+      const { files } = generate({
+        nodes: [{ id: "f", type: "function", name: "Custom", code }],
+        edges: [],
+      });
+      assert.strictEqual(files["src/custom.js"], code);
+    });
+
+    await test("warns on an edge whose target isn't a function", () => {
+      const { warnings } = generate({
+        nodes: [
+          { id: "a", type: "queue", name: "Q" },
+          { id: "b", type: "bucket", name: "B" },
+        ],
+        edges: [{ source: "a", target: "b" }],
+      });
+      assert.ok(warnings.some((w) => /must be a function/.test(w)));
+    });
+
+    await test("deduplicates colliding sanitized names", () => {
+      const { files } = generate({
+        nodes: [
+          { id: "1", type: "queue", name: "My Queue" },
+          { id: "2", type: "queue", name: "my-queue" },
+        ],
+        edges: [],
+      });
+      // both sanitize to "my_queue"; second must be suffixed
+      assert.ok(files["main.tf"].includes('"my_queue"'));
+      assert.ok(files["main.tf"].includes('"my_queue_2"'));
+    });
+  }
+
   console.log("synth:");
   if (haveExamplePlan) {
     await test("translates example plan.json into a loadable .wsim", async () => {
