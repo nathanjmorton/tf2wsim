@@ -48,6 +48,51 @@ async function main() {
     assert.strictEqual(edges[0].subscriber, "aws_lambda_function.f");
   });
 
+  console.log("console lock reclaim:");
+  {
+    const { reclaimStaleLock } = require("../src/console");
+    const mkSim = () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wsim-lock-"));
+      fs.mkdirSync(path.join(dir, ".state"), { recursive: true });
+      return dir;
+    };
+    const writeLock = (dir, ownerPid) => {
+      fs.writeFileSync(path.join(dir, ".state", ".lock"), "");
+      if (ownerPid !== undefined) {
+        fs.writeFileSync(path.join(dir, ".state", ".tf2wsim-owner"), String(ownerPid));
+      }
+    };
+    const lockExists = (dir) => fs.existsSync(path.join(dir, ".state", ".lock"));
+
+    await test("reclaims a lock whose owner pid is dead", () => {
+      const dir = mkSim();
+      writeLock(dir, 999999); // pid that's virtually certain not to exist
+      const r = reclaimStaleLock(dir);
+      assert.strictEqual(r.live, false);
+      assert.strictEqual(r.reclaimed, true);
+      assert.ok(!lockExists(dir), "orphaned lock should be removed");
+    });
+
+    await test("refuses to reclaim a lock held by a live foreign pid", () => {
+      const dir = mkSim();
+      // Use a definitely-live pid other than ours: the test process's own
+      // parent. If unavailable, fall back to pid 1 (init), always alive.
+      const livePid = process.ppid && process.ppid !== process.pid ? process.ppid : 1;
+      writeLock(dir, livePid);
+      const r = reclaimStaleLock(dir);
+      assert.strictEqual(r.live, true, "should report a live owner");
+      assert.ok(lockExists(dir), "live lock must not be removed");
+    });
+
+    await test("no lock present -> records ownership, no error", () => {
+      const dir = mkSim();
+      const r = reclaimStaleLock(dir);
+      assert.strictEqual(r.live, false);
+      const owner = fs.readFileSync(path.join(dir, ".state", ".tf2wsim-owner"), "utf8").trim();
+      assert.strictEqual(owner, String(process.pid));
+    });
+  }
+
   console.log("synth:");
   if (haveExamplePlan) {
     await test("translates example plan.json into a loadable .wsim", async () => {
@@ -58,7 +103,7 @@ async function main() {
       assert.strictEqual(res.edges.length, 1);
       const man = JSON.parse(fs.readFileSync(path.join(outDir, "simulator.json"), "utf8"));
       assert.ok(man.types["@winglang/sdk.cloud.Queue"], "queue type registered");
-      assert.ok(man.resources["root/EventMapping0"], "event mapping emitted");
+      assert.ok(man.resources["root/Default/EventMapping0"], "event mapping emitted");
     });
 
     await test("simulator invokes the lambda when a message is pushed", async () => {

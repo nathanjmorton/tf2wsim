@@ -92,6 +92,29 @@ expects. The Console never knows it isn't talking to the Wing compiler.
 Because the Console also watches the source directory, editing the `.tf`
 re-plans and live-reloads the simulated graph.
 
+### Resource map
+
+The center canvas renders the resource graph with the event edges between
+nodes (e.g. an arrow from `aws_sqs_queue.work` to
+`aws_lambda_function.processor`). The Console's map view renders the children
+of the `root/Default` construct scope, so tf2wsim nests every resource under
+`root/Default/<tf-address>` to match — see `ROOT_SCOPE` in `src/constants.js`.
+
+### State-lock cleanup
+
+The simulator guards its state directory with a lockfile
+(`<wsim>/.state/.lock`). If a Console is killed uncleanly, that lock can linger
+and block the next run with *"Another instance of the simulator is already
+running"*. tf2wsim makes recovery deterministic: it writes an ownership pidfile
+(`.tf2wsim-owner`) next to the lock, and on startup:
+
+- **no lock** → record our PID and continue;
+- **lock owned by a dead PID (or unknown)** → orphaned, so remove it and take over;
+- **lock owned by a live PID** → a real instance is running, so refuse with a clear error.
+
+On `SIGINT`/`SIGTERM` the Console also tries to stop the simulator (releasing
+the lock), with a hard-timeout fallback so shutdown never hangs.
+
 In the screenshot below, pushing a message to `aws_sqs_queue.work` from the
 Console's *Push Message* box flows through the reconstructed event mapping and
 invokes `aws_lambda_function.processor` — all defined in `main.tf`, none of it

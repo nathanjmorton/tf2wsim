@@ -25,6 +25,69 @@ function sdkLibDir() {
   return path.join(path.dirname(pkg), "lib");
 }
 
+// The simulator guards its state directory with a lockfile at
+// <simdir>/.state/.lock whose mtime it refreshes every ~1s. If a previous
+// Console was killed uncleanly, that lock lingers and blocks the next run with
+// "Another instance of the simulator is already running...". The SDK's own
+// staleness check (mtime > 10s) doesn't help if you restart quickly.
+//
+// We make reclamation deterministic with an ownership pidfile we write next to
+// the lock. On startup:
+//   - no lock        -> nothing to do; record our PID as owner
+//   - lock + owner dead (or no owner recorded) -> orphaned; remove and take over
+//   - lock + owner alive and not us            -> a real instance owns it; error
+// This avoids the timing race of an mtime-based heuristic (the SDK refreshes
+// the lock every second, so a freshly-orphaned lock still looks "fresh").
+function ownerPath(simDir) {
+  return path.join(simDir, ".state", ".tf2wsim-owner");
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0); // signal 0 = existence check
+    return true;
+  } catch (e) {
+    return e.code === "EPERM"; // exists but not ours to signal
+  }
+}
+
+function reclaimStaleLock(simDir, log = () => {}) {
+  const lockPath = path.join(simDir, ".state", ".lock");
+  const ownPath = ownerPath(simDir);
+  let lockExists = true;
+  try {
+    fs.statSync(lockPath);
+  } catch (e) {
+    if (e.code === "ENOENT") lockExists = false;
+    else throw e;
+  }
+
+  if (lockExists) {
+    let owner;
+    try {
+      owner = parseInt(fs.readFileSync(ownPath, "utf8").trim(), 10);
+    } catch {
+      owner = NaN;
+    }
+    if (owner === process.pid) {
+      // We already own this state dir (e.g. a live reload). Leave the lock be.
+      return { reclaimed: false, live: false };
+    }
+    if (Number.isInteger(owner) && pidAlive(owner)) {
+      // A different, live tf2wsim console owns this state directory.
+      return { reclaimed: false, live: true };
+    }
+    // Orphaned lock (owner dead, or unknown owner) — reclaim it.
+    fs.rmSync(lockPath, { force: true });
+    log(`tf2wsim: removed orphaned simulator lock (previous owner pid ${owner || "unknown"})\n`);
+  }
+
+  // Record ourselves as the current owner.
+  fs.mkdirSync(path.dirname(ownPath), { recursive: true });
+  fs.writeFileSync(ownPath, String(process.pid));
+  return { reclaimed: lockExists, live: false };
+}
+
 // Produce terraform JSON for a given entrypoint (a .tf file, a directory, or a
 // prebuilt `terraform show -json` file).
 function terraformJsonFor(entrypoint) {
@@ -56,6 +119,16 @@ async function tfCompile(entrypoint, options = {}) {
     // Stable output dir under target/ so the Console's watcher ignores it and
     // simulator.update() can diff against the previous run on reload.
     const outDir = path.join(tfDir, "target", "console.wsim");
+    // Reclaim a lock orphaned by a previously-killed Console before the server
+    // tries to (re)start the simulator on this state directory.
+    const lock = reclaimStaleLock(outDir, preflightLog);
+    if (lock.live) {
+      throw new Error(
+        `A simulator lock at ${path.join(outDir, ".state", ".lock")} is being ` +
+          `actively held — another tf2wsim console may be running on this ` +
+          `directory. Stop it first, or use a different terraform directory.`
+      );
+    }
     const res = synth({ tfJson, outDir, tfDir, sdkLibDir: sdkLibDir() });
     preflightLog(
       `tf2wsim: ${res.resourceCount} resources, ${res.edges.length} event edge(s)` +
@@ -104,7 +177,34 @@ async function startConsole({ entrypoint, port }) {
       async openExternal() {},
     },
   });
+
+  // Release the simulator lock cleanly on exit so the next run isn't blocked.
+  // server.close() stops the simulator (and thus releases its lockfile), but it
+  // can hang if a sandbox worker is wedged — so we cap it with a hard timeout
+  // and exit regardless. (If we're killed with SIGKILL or the close hangs past
+  // the timeout, the pidfile-based reclaim on the next run cleans up anyway.)
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    const forceExit = setTimeout(() => process.exit(0), 3000);
+    forceExit.unref?.();
+    try {
+      if (typeof server.close === "function") {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    } catch {
+      // best-effort
+    } finally {
+      clearTimeout(forceExit);
+      process.exit(0);
+    }
+  };
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => void shutdown());
+  }
+
   return server;
 }
 
-module.exports = { startConsole, tfCompile };
+module.exports = { startConsole, tfCompile, reclaimStaleLock };

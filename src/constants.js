@@ -1,4 +1,10 @@
 "use strict";
+// The construct-tree scope under which all resources live. The Wing Console's
+// map view renders the children of `root/Default` (Wing nests an app's
+// resources under a "Default" construct), so we mirror that layout to make the
+// graph render.
+module.exports.ROOT_SCOPE = "root/Default";
+
 // Canonical Wing SDK simulator type FQNs and the inflight class that backs each.
 // These match @winglang/sdk's target-sim SIMULATOR_CLASS_DATA table.
 module.exports.WING_TYPES = {

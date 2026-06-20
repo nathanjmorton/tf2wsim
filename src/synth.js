@@ -13,13 +13,15 @@ const {
   WING_TYPES,
   WING_CLASSNAMES,
   WING_INFLIGHT_FILE,
+  ROOT_SCOPE,
 } = require("./constants");
 
 // Turn a TF resource address ("aws_sqs_queue.work") into a Wing resource path
-// ("root/aws_sqs_queue.work"). Wing paths use '/'-separation; we keep the TF
-// address as a single leaf so it's recognizable in the Console.
+// ("root/Default/aws_sqs_queue.work"). We keep the TF address as a single leaf
+// so it's recognizable in the Console, nested under the Default scope the
+// Console's map view expects.
 function pathFor(address) {
-  return "root/" + address;
+  return ROOT_SCOPE + "/" + address;
 }
 
 function buildTypesTable(sdkLibDir, usedTypes) {
@@ -112,12 +114,13 @@ function synth({ tfJson, outDir, tfDir, sdkLibDir }) {
   return { outDir, skipped, resourceCount: Object.keys(resources).length, edges };
 }
 
-// Minimal construct tree for the Console's tree view.
+// Construct tree for the Console. Resources are nested under root/Default
+// because the Console's map view renders the children of the "Default" scope.
 function buildTree(resources) {
-  const children = {};
+  const defaultChildren = {};
   for (const [rpath, def] of Object.entries(resources)) {
-    const id = rpath.slice("root/".length);
-    children[id] = {
+    const id = rpath.slice(ROOT_SCOPE.length + 1); // strip "root/Default/"
+    defaultChildren[id] = {
       id,
       path: rpath,
       children: {},
@@ -125,9 +128,20 @@ function buildTree(resources) {
       constructInfo: { fqn: def.type, version: "0.0.0" },
     };
   }
+  const defaultNode = {
+    id: "Default",
+    path: ROOT_SCOPE,
+    children: defaultChildren,
+    constructInfo: { fqn: "constructs.Construct", version: "0.0.0" },
+  };
   return {
     version: "tree-0.1",
-    tree: { id: "root", path: "root", children },
+    tree: {
+      id: "root",
+      path: "root",
+      children: { Default: defaultNode },
+      constructInfo: { fqn: "constructs.Construct", version: "0.0.0" },
+    },
   };
 }
 

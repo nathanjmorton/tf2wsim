@@ -10,7 +10,7 @@
 //   - aws_cloudwatch_event_target     { rule -> schedule, arn -> Lambda }
 // We detect each pattern, resolve the publisher & subscriber to their Wing
 // resource paths, and synthesize an EventMapping.
-const { WING_TYPES } = require("./constants");
+const { WING_TYPES, ROOT_SCOPE } = require("./constants");
 const { handleToken } = require("./tokens");
 
 // Per-publisher: which subscriptionProps the sim resource expects, and which
@@ -52,7 +52,7 @@ function applyWiring(edges, resources) {
       pub.policy.push({ operation: op, resourceHandle: handleToken(edge.subscriberPath) });
     }
 
-    const path = `root/EventMapping${i++}`;
+    const path = `${ROOT_SCOPE}/EventMapping${i++}`;
     mappings[path] = {
       type: WING_TYPES.EVENT_MAPPING,
       path,
