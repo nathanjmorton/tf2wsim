@@ -1,0 +1,13 @@
+{
+  "name": "tf2wsim",
+  "version": "0.1.0",
+  "description": "Drive the Wing simulator (and Console) from a Terraform configuration",
+  "bin": { "tf2wsim": "bin/tf2wsim.js" },
+  "type": "commonjs",
+  "scripts": {
+    "test": "node test/run.test.js"
+  },
+  "dependencies": {
+    "@winglang/sdk": "0.85.49"
+  }
+}

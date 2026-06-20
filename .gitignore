@@ -1,0 +1,10 @@
+node_modules/
+out.wsim/
+probe/
+*.wsim/
+examples/**/.terraform/
+examples/**/.terraform.lock.hcl
+examples/**/build/
+examples/**/plan.json
+examples/**/out.wsim/
+examples/**/.tf2wsim.plan
