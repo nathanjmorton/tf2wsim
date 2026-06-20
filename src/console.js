@@ -132,6 +132,13 @@ function terraformJsonFor(entrypoint) {
   return { tfJson: JSON.parse(out.toString()), tfDir };
 }
 
+// The .wsim directory most recently produced by tfCompile. The browser bridge
+// (mounted on the Console's express server) reads it to find running sim Apis.
+let lastWsimDir = null;
+function getLastWsimDir() {
+  return lastWsimDir;
+}
+
 // Our drop-in replacement for @winglang/compiler's `compile`.
 async function tfCompile(entrypoint, options = {}) {
   const preflightLog = options.preflightLog || (() => {});
@@ -140,6 +147,7 @@ async function tfCompile(entrypoint, options = {}) {
     // Stable output dir under target/ so the Console's watcher ignores it and
     // simulator.update() can diff against the previous run on reload.
     const outDir = path.join(tfDir, "target", "console.wsim");
+    lastWsimDir = outDir;
     // Reclaim a lock orphaned by a previously-killed Console before the server
     // tries to (re)start the simulator on this state directory.
     const lock = reclaimStaleLock(outDir, preflightLog);
@@ -212,6 +220,7 @@ async function startConsole({ entrypoint, port }) {
   const { createConsoleApp } = require("@wingconsole/app");
   process.env.NO_SIGN_IN = process.env.NO_SIGN_IN || "true";
   process.env.WING_DISABLE_ANALYTICS = process.env.WING_DISABLE_ANALYTICS || "1";
+  const { mountBridge } = require("./bridge");
   const server = await createConsoleApp({
     wingfile: resolveWingfile(entrypoint),
     requestedPort: port,
@@ -219,6 +228,11 @@ async function startConsole({ entrypoint, port }) {
     requireAcceptTerms: false,
     hostUtils: {
       async openExternal() {},
+    },
+    // Mount our browser-reachable bridge (upload form + sim-Api proxy) on the
+    // Console's own express server.
+    onExpressCreated(app) {
+      mountBridge(app, getLastWsimDir);
     },
   });
 

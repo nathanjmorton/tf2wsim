@@ -67,6 +67,7 @@ Terraform.
 | `aws_lambda_function` (Node.js) | `cloud.Function` |
 | `aws_sns_topic` | `cloud.Topic` |
 | `aws_secretsmanager_secret` | `cloud.Secret` |
+| `aws_apigatewayv2_api` (HTTP API) | `cloud.Api` |
 
 ### Event wiring (reconstructed from the TF graph)
 
@@ -76,10 +77,27 @@ Terraform.
 | `aws_sns_topic_subscription` | `sim.EventMapping` Topic→Function |
 | `aws_s3_bucket_notification` | `sim.EventMapping` Bucket→Function |
 | `aws_cloudwatch_event_target` | `sim.EventMapping` Schedule→Function |
+| `aws_apigatewayv2_route` + `_integration` | `sim.EventMapping` Api→Function (method + path) |
 
 The simulator enforces IAM-like policies, so for each edge tf2wsim also grants
 the publisher the operations (`invoke`, `hasAvailableWorkers`, …) it needs on
 the subscriber function.
+
+### Capabilities (Function → Bucket)
+
+When a Lambda *references* an S3 bucket (e.g. `environment { variables = {
+STORAGE_BUCKET = aws_s3_bucket.storage.bucket } }`), tf2wsim grants it bucket
+access in the simulator: it injects an env var `TF2WSIM_BUCKETS` mapping the
+bucket's Terraform name to its runtime handle, and adds the `put`/`get`/`list`/…
+policies. Handler code reaches the bucket with:
+
+```js
+const { makeSimulatorClient } = require("@winglang/sdk/lib/simulator/client");
+const handle = JSON.parse(process.env.TF2WSIM_BUCKETS).storage;
+const bucket = makeSimulatorClient(
+  process.env.WING_SIMULATOR_URL, handle, process.env.WING_SIMULATOR_CALLER);
+await bucket.put(key, data);
+```
 
 ## Usage
 
@@ -203,6 +221,44 @@ order-processor received: {"messages":[{ "payload":"{\"orderId\":7,...}" }]}
 The Queue's panel even shows **Timeout: 45s**, mapped straight from the
 `visibility_timeout_seconds = 45` in the Terraform config.
 
+## Example: image upload (API → Lambda → S3)
+
+`examples/upload` is a real, useful end-to-end flow: an HTTP API Gateway routes
+`POST /upload` to a Lambda that validates the request (image type, size limit)
+and stores the image in an S3 bucket — all defined in Terraform, all simulated.
+
+```bash
+cd examples/upload && terraform init
+node ../../bin/tf2wsim.js console .
+```
+
+Then open the built-in upload form and drop in an image:
+
+```
+http://localhost:3000/tf2wsim/upload
+```
+
+The image flows **browser form → simulated API Gateway → validator Lambda → S3
+bucket**, and the stored file appears in the Console's Bucket panel (where you
+can preview/download it). Non-image uploads are rejected with `415`.
+
+### The browser bridge
+
+There's a wrinkle worth knowing: each simulated resource (Api, Bucket) binds an
+*ephemeral localhost port*, reachable from inside the VM but **not from your
+browser** through the exe.dev proxy. Only the Console's own server is
+browser-reachable. So tf2wsim mounts a small **bridge** on the Console's express
+server (via `onExpressCreated`):
+
+| route | purpose |
+|---|---|
+| `GET /tf2wsim/upload` | serves the built-in upload form |
+| `GET /tf2wsim/apis` | lists running sim Apis (+ their live URLs) |
+| `ALL /tf2wsim/call/<apiName>/<path>` | forwards a browser request to that sim Api |
+
+The bridge finds a running Api's port from its sim state
+(`<wsim>/.state/<addr>/state.json`). See `src/bridge.js`.
+
 ## Lambda handler resolution
 
 Terraform only points a Lambda at a deployment zip. tf2wsim unzips the local
@@ -227,6 +283,8 @@ src/
   mappers.js    per-resource TF -> Wing type/props mapping
   edges.js      discover event-source wiring from the TF graph
   wiring.js     edges -> sim.EventMapping resources + publisher policies
+  capabilities.js Function -> Bucket access (handle env vars + storage policies)
+  bridge.js     browser-reachable upload form + sim-Api proxy (mounted on Console)
   resolver.js   lambda zip -> runnable JS handler shim
   synth.js      orchestrates the above -> .wsim directory
   console.js    boots the Wing Console (compiler intercept, progress, lock reclaim)

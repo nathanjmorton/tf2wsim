@@ -72,7 +72,36 @@ function discoverEdges(resources, refs) {
     if (publisher && subscriber) edges.push({ publisher, subscriber });
   }
 
+  // --- aws_apigatewayv2 HTTP API: Api -> Lambda, carrying the route(s) ---
+  // Pattern: route(api_id -> api, target -> integration); integration
+  // (integration_uri -> lambda). We resolve route -> integration -> lambda and
+  // attach the route's method+path so wiring.js can subscribe the function.
+  const integrations = {}; // integration address -> lambda address
+  for (const integ of grouped.aws_apigatewayv2_integration || []) {
+    const r = refs[integ.address] || {};
+    const lambda = pickRef(r.integration_uri, addressType, ["aws_lambda_function"]);
+    if (lambda) integrations[integ.address] = lambda;
+  }
+  for (const route of grouped.aws_apigatewayv2_route || []) {
+    const r = refs[route.address] || {};
+    const api = pickRef(r.api_id, addressType, ["aws_apigatewayv2_api"]);
+    // route.target references an integration ("integrations/<id>"); resolve it.
+    const integ = pickRef(r.target, addressType, ["aws_apigatewayv2_integration"]);
+    const lambda = integ ? integrations[integ] : null;
+    if (!api || !lambda) continue;
+    const routeKey = (route.values && route.values.route_key) || "$default";
+    const { method, path } = parseRouteKey(routeKey);
+    edges.push({ publisher: api, subscriber: lambda, route: { method, pathPattern: path } });
+  }
+
   return edges;
+}
+
+// "POST /upload" -> { method:"POST", path:"/upload" }; "$default" -> ANY "/".
+function parseRouteKey(routeKey) {
+  if (routeKey === "$default") return { method: "ANY", path: "/" };
+  const [method, path] = routeKey.split(/\s+/);
+  return { method: (method || "ANY").toUpperCase(), path: path || "/" };
 }
 
 module.exports = { discoverEdges };

@@ -7,6 +7,7 @@ const { parsePlan } = require("./parser");
 const { mapResource } = require("./mappers");
 const { resolveHandler } = require("./resolver");
 const { applyWiring } = require("./wiring");
+const { applyCapabilities } = require("./capabilities");
 const { discoverEdges } = require("./edges");
 const { addrFor } = require("./tokens");
 const {
@@ -74,30 +75,34 @@ function synth({ tfJson, outDir, tfDir, sdkLibDir }) {
     };
   }
 
-  // 2. Discover event-source edges from the TF graph (raw TF addresses).
+  // 2. Wire Function -> Bucket capabilities (env handles + storage policies).
+  applyCapabilities({ resources, tfResources, addressToPath, refs });
+
+  // 3. Discover event-source edges from the TF graph (raw TF addresses).
   const rawEdges = discoverEdges(tfResources, refs);
-  // translate addresses -> wing paths
+  // translate addresses -> wing paths (preserving any per-edge route metadata)
   const edges = rawEdges
     .map((e) => ({
       publisherPath: addressToPath[e.publisher],
       subscriberPath: addressToPath[e.subscriber],
+      route: e.route,
     }))
     .filter((e) => e.publisherPath && e.subscriberPath);
 
-  // 3. Synthesize EventMappings + publisher policies.
+  // 4. Synthesize EventMappings + publisher policies.
   const mappings = applyWiring(edges, resources);
   for (const [p, def] of Object.entries(mappings)) {
     def.addr = addrFor(p);
     resources[p] = def;
   }
 
-  // 4. Build the types table (only for types actually used).
+  // 5. Build the types table (only for types actually used).
   const usedTypes = new Set(Object.values(resources).map((r) => r.type));
   const types = buildTypesTable(sdkLibDir, usedTypes);
 
   const sdkVersion = require(path.join(sdkLibDir, "constants")).SDK_VERSION;
 
-  // 5. Write the three files that make up a .wsim directory.
+  // 6. Write the three files that make up a .wsim directory.
   fs.writeFileSync(
     path.join(outDir, "simulator.json"),
     JSON.stringify({ types, resources, sdkVersion }, null, 2)

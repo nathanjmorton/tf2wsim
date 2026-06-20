@@ -93,6 +93,60 @@ async function main() {
     });
   }
 
+  console.log("capabilities + api wiring:");
+  {
+    const { discoverEdges } = require("../src/edges");
+    const { applyCapabilities } = require("../src/capabilities");
+    const { WING_TYPES } = require("../src/constants");
+    const { handleToken } = require("../src/tokens");
+
+    await test("discovers an apigatewayv2 route -> lambda edge with method/path", () => {
+      const resources = [
+        { address: "aws_apigatewayv2_api.api", type: "aws_apigatewayv2_api", name: "api", values: {} },
+        { address: "aws_apigatewayv2_integration.up", type: "aws_apigatewayv2_integration", name: "up", values: {} },
+        { address: "aws_apigatewayv2_route.up", type: "aws_apigatewayv2_route", name: "up", values: { route_key: "POST /upload" } },
+        { address: "aws_lambda_function.f", type: "aws_lambda_function", name: "f", values: {} },
+      ];
+      const refs = {
+        "aws_apigatewayv2_integration.up": { integration_uri: ["aws_lambda_function.f"] },
+        "aws_apigatewayv2_route.up": {
+          api_id: ["aws_apigatewayv2_api.api"],
+          target: ["aws_apigatewayv2_integration.up"],
+        },
+      };
+      const edges = discoverEdges(resources, refs);
+      assert.strictEqual(edges.length, 1);
+      assert.strictEqual(edges[0].publisher, "aws_apigatewayv2_api.api");
+      assert.strictEqual(edges[0].subscriber, "aws_lambda_function.f");
+      assert.deepStrictEqual(edges[0].route, { method: "POST", pathPattern: "/upload" });
+    });
+
+    await test("grants a function bucket access when it references a bucket", () => {
+      const fnPath = "root/Default/aws_lambda_function.f";
+      const bucketPath = "root/Default/aws_s3_bucket.b";
+      const resources = {
+        [fnPath]: { type: WING_TYPES.FUNCTION, path: fnPath, props: { environmentVariables: {} } },
+        [bucketPath]: { type: WING_TYPES.BUCKET, path: bucketPath, props: {} },
+      };
+      const tfResources = [
+        { address: "aws_lambda_function.f", type: "aws_lambda_function", name: "f" },
+        { address: "aws_s3_bucket.b", type: "aws_s3_bucket", name: "b" },
+      ];
+      const addressToPath = {
+        "aws_lambda_function.f": fnPath,
+        "aws_s3_bucket.b": bucketPath,
+      };
+      const refs = { "aws_lambda_function.f": { environment: ["aws_s3_bucket.b"] } };
+      const wired = applyCapabilities({ resources, tfResources, addressToPath, refs });
+      assert.strictEqual(wired.length, 1);
+      const fn = resources[fnPath];
+      const buckets = JSON.parse(fn.props.environmentVariables.TF2WSIM_BUCKETS);
+      assert.strictEqual(buckets.b, handleToken(bucketPath));
+      assert.ok(fn.policy.some((p) => p.operation === "put" && p.resourceHandle === handleToken(bucketPath)));
+      assert.ok(fn.deps.includes(bucketPath));
+    });
+  }
+
   console.log("generate (builder -> terraform):");
   {
     const { generate } = require("../src/generate");
@@ -179,7 +233,45 @@ async function main() {
       assert.ok(invoked, "lambda handler was not invoked");
     });
   } else {
-    console.log("  - skipped example tests (run: cd examples/basic && terraform init && terraform plan -out .p && terraform show -json .p > plan.json)");
+    console.log("  - skipped basic example tests (no plan.json)");
+  }
+
+  const uploadDir = path.join(__dirname, "..", "examples", "upload");
+  const uploadPlan = path.join(uploadDir, "plan.json");
+  if (fs.existsSync(uploadPlan)) {
+    const http = require("http");
+    const post = (base, p, body) =>
+      new Promise((resolve, reject) => {
+        const u = new URL(base);
+        const r = http.request(
+          { hostname: u.hostname, port: u.port, path: p, method: "POST", headers: { "content-type": "application/json" } },
+          (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve({ status: res.statusCode, body: d })); }
+        );
+        r.on("error", reject); r.write(body); r.end();
+      });
+
+    await test("upload example: api -> validate lambda -> bucket (image stored)", async () => {
+      const { simulator } = require("@winglang/sdk");
+      const tfJson = JSON.parse(fs.readFileSync(uploadPlan, "utf8"));
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "wsim-up-"));
+      synth({ tfJson, outDir, tfDir: uploadDir, sdkLibDir: sdkLibDir() });
+      const sim = new simulator.Simulator({ simfile: outDir });
+      await sim.start();
+      try {
+        const apiPath = sim.listResources().find((p) => p.includes("apigatewayv2_api"));
+        const apiUrl = sim.getResourceConfig(apiPath).attrs.url;
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        const ok = await post(apiUrl, "/upload", JSON.stringify({ filename: "p.png", contentType: "image/png", dataBase64: png }));
+        assert.strictEqual(ok.status, 200, `valid upload should 200, got ${ok.status}: ${ok.body}`);
+        const bad = await post(apiUrl, "/upload", JSON.stringify({ filename: "n.txt", contentType: "text/plain", dataBase64: "aGk=" }));
+        assert.strictEqual(bad.status, 415, "non-image should be rejected with 415");
+        const bucketPath = sim.listResources().find((p) => p.includes("s3_bucket"));
+        const list = await sim.getResource(bucketPath).list();
+        assert.strictEqual(list.length, 1, "exactly one (valid) image should be stored");
+      } finally {
+        await sim.stop();
+      }
+    });
   }
 
   console.log(`\n${passed} passed`);

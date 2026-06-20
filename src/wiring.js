@@ -28,6 +28,19 @@ const PUBLISHER_SPEC = {
     subProps: () => ({}),
     grants: ["invoke"],
   },
+  // The sim Api subscribes a function to one or more HTTP routes. The route
+  // (method + path) rides along on the edge from edges.js.
+  [WING_TYPES.API]: {
+    subProps: (edge) => ({
+      routes: [
+        {
+          method: (edge.route && edge.route.method) || "ANY",
+          pathPattern: (edge.route && edge.route.pathPattern) || "/",
+        },
+      ],
+    }),
+    grants: ["invoke"],
+  },
 };
 
 // Given the wiring "edges" discovered from the TF graph, build EventMapping
@@ -59,7 +72,7 @@ function applyWiring(edges, resources) {
       props: {
         publisher: handleToken(edge.publisherPath),
         subscriber: handleToken(edge.subscriberPath),
-        subscriptionProps: spec.subProps(),
+        subscriptionProps: spec.subProps(edge),
       },
       deps: [edge.publisherPath, edge.subscriberPath],
     };

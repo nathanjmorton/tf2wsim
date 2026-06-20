@@ -68,12 +68,34 @@ function mapSecret(tf) {
   return { type: WING_TYPES.SECRET, props: { name: v.name || tf.name } };
 }
 
+// aws_apigatewayv2_api (HTTP API) -> cloud.Api
+// The sim Api needs an openApiSpec; routes are attached later as event
+// subscriptions (see edges.js / wiring.js), so a minimal spec is enough here.
+function mapApi(tf) {
+  return {
+    type: WING_TYPES.API,
+    props: {
+      openApiSpec: { openapi: "3.0.3", info: { title: tf.name, version: "1.0" }, paths: {} },
+      // CORS so a browser form served elsewhere can call it.
+      corsHeaders: {
+        defaultResponse: { "Access-Control-Allow-Origin": "*" },
+        optionsResponse: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      },
+    },
+  };
+}
+
 const MAPPERS = {
   aws_s3_bucket: mapBucket,
   aws_sqs_queue: mapQueue,
   aws_lambda_function: mapFunction,
   aws_sns_topic: mapTopic,
   aws_secretsmanager_secret: mapSecret,
+  aws_apigatewayv2_api: mapApi,
 };
 
 function mapResource(tf) {
