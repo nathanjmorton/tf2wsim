@@ -64,9 +64,46 @@ node bin/tf2wsim.js build --json plan.json -o out.wsim
 
 # load it in the simulator and print the resource list:
 node bin/tf2wsim.js run out.wsim
+
+# open the Wing Console on the Terraform graph (interactive UI):
+node bin/tf2wsim.js console path/to/tfdir -p 3000
+# ...or against a prebuilt plan.json:
+node bin/tf2wsim.js console plan.json -p 3000
 ```
 
 See `examples/basic` for an SQS→Lambda example with a real Node handler.
+
+## The Console
+
+`tf2wsim console` boots the real [Wing Console](https://www.npmjs.com/package/@wingconsole/app)
+(`@wingconsole/app@0.85.49`) but feeds it a `.wsim` produced from Terraform
+instead of from a compiled Wing program. You get the full Console experience
+— a resource hierarchy, an interaction panel per resource, and a live trace log
+— driven entirely by your `.tf`.
+
+**How the seam works:** the Console's server calls
+`require("@winglang/compiler").compile(wingfile)` and uses the returned
+`outputDir` as the simulator file. `src/console.js` installs a `Module._load`
+hook that intercepts `@winglang/compiler` and swaps in our own `compile` that
+runs `terraform plan` + tf2wsim's `synth()` and returns the resulting `.wsim`
+directory in the `{ outputDir, wingcErrors, preflightError }` shape the Console
+expects. The Console never knows it isn't talking to the Wing compiler.
+
+Because the Console also watches the source directory, editing the `.tf`
+re-plans and live-reloads the simulated graph.
+
+In the screenshot below, pushing a message to `aws_sqs_queue.work` from the
+Console's *Push Message* box flows through the reconstructed event mapping and
+invokes `aws_lambda_function.processor` — all defined in `main.tf`, none of it
+Wing:
+
+```
+order-processor received: {"messages":[{ "payload":"{\"orderId\":7,...}" }]}
+  -> aws_lambda_function.processor
+```
+
+The Queue's panel even shows **Timeout: 45s**, mapped straight from the
+`visibility_timeout_seconds = 45` in the Terraform config.
 
 ## Lambda handler resolution
 
@@ -94,6 +131,7 @@ src/
   wiring.js     edges -> sim.EventMapping resources + publisher policies
   resolver.js   lambda zip -> runnable JS handler shim
   synth.js      orchestrates the above -> .wsim directory
+  console.js    boots the Wing Console, intercepting @winglang/compiler
   tokens.js     wsim token + address helpers
   constants.js  Wing type FQN / classname / inflight-file tables
 bin/tf2wsim.js  CLI (build / run)

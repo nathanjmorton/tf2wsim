@@ -4,9 +4,10 @@
 // directory, then optionally run it.
 //
 // Usage:
-//   tf2wsim build  <tfdir> [-o out.wsim]    # plan + translate
-//   tf2wsim build  --json plan.json [-o ...] # translate an existing show -json
-//   tf2wsim run    <out.wsim>                # load in the simulator, print tree
+//   tf2wsim build   <tfdir> [-o out.wsim]    # plan + translate
+//   tf2wsim build   --json plan.json [-o ...] # translate an existing show -json
+//   tf2wsim run     <out.wsim>               # load in the simulator, print tree
+//   tf2wsim console <tfdir|plan.json> [-p N] # open the Wing Console on the TF graph
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
@@ -37,6 +38,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-o" || a === "--out") args.out = argv[++i];
+    else if (a === "-p" || a === "--port") args.port = parseInt(argv[++i], 10);
     else if (a === "--json") args.json = argv[++i];
     else args._.push(a);
   }
@@ -76,17 +78,31 @@ async function cmdRun(args) {
   await sim.stop();
 }
 
+async function cmdConsole(args) {
+  const { startConsole } = require("../src/console");
+  const entrypoint = path.resolve(args._[0] || ".");
+  const port = args.port || 3000;
+  const server = await startConsole({ entrypoint, port });
+  const url = `http://localhost:${server.port}/`;
+  console.log(`\u2713 Wing Console for ${entrypoint}`);
+  console.log(`  open: ${url}`);
+  // keep the process alive
+  process.stdin.resume();
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
   switch (cmd) {
     case "build": return cmdBuild(args);
     case "run": return cmdRun(args);
+    case "console": return cmdConsole(args);
     default:
-      console.log("Usage: tf2wsim <build|run> ...");
+      console.log("Usage: tf2wsim <build|run|console> ...");
       console.log("  build <tfdir> [-o out.wsim]");
       console.log("  build --json plan.json [-o out.wsim]");
       console.log("  run <out.wsim>");
+      console.log("  console <tfdir|plan.json> [-p port]");
       process.exit(cmd ? 1 : 0);
   }
 }

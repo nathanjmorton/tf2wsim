@@ -8,3 +8,5 @@ examples/**/build/
 examples/**/plan.json
 examples/**/out.wsim/
 examples/**/.tf2wsim.plan
+examples/**/target/
+console.wsim/
