@@ -335,13 +335,25 @@ async function main() {
 
         const apiPath = sim.listResources().find((p) => p.includes("function_url"));
         const apiUrl = sim.getResourceConfig(apiPath).attrs.url;
-        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-        const up = await post(apiUrl, "/", JSON.stringify({ filename: "x.png", contentType: "image/png", dataBase64: png }));
+        // Bytes that are NOT valid UTF-8 (JPEG magic + 0xFF 0xFE), to exercise
+        // the binary round-trip: the sim Bucket's get() uses a fatal UTF-8
+        // decoder, so storing base64 (not raw bytes) is what makes download work.
+        const original = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0xff, 0xfe, 0xc0, 0xde]);
+        const b64 = original.toString("base64");
+        const up = await post(apiUrl, "/", JSON.stringify({ filename: "photo.jpg", contentType: "image/jpeg", dataBase64: b64 }));
         assert.strictEqual(up.status, 200, `function URL upload should 200: ${up.body}`);
 
         const storagePath = sim.listResources().find((p) => p.includes("s3_bucket.storage"));
-        const list = await sim.getResource(storagePath).list();
+        const bucketClient = sim.getResource(storagePath);
+        const list = await bucketClient.list();
         assert.strictEqual(list.length, 1, "image should be stored");
+        // Read it back the way the Console's download does: get() -> base64 ->
+        // decode. This must equal the original bytes (the download-bug fix).
+        const stored = await bucketClient.get(list[0]);
+        assert.ok(
+          Buffer.from(stored, "base64").equals(original),
+          "downloaded bytes must match the original (binary round-trip)"
+        );
       } finally {
         await sim.stop();
       }

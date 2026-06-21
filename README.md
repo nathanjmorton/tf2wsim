@@ -241,19 +241,36 @@ Run it with one command:
 npm run example:upload
 ```
 
-When the Console is ready, open the form (served from the simulated website
-bucket, via the bridge below):
+When the Console is ready, use the floating **“\u{1F517} Open\u2026” launcher**
+(bottom-right of the Console) to open the upload form — or go straight to it:
 
 ```
 http://localhost:3000/tf2wsim/site/aws_s3_bucket_website_configuration.site/
 ```
 
 Drop in an image — it flows **website → Function URL → validator Lambda → S3** and
-appears in the Console's Bucket panel (preview/download). Non-image uploads are
+appears in the Console's Bucket panel, where you can **preview and download** it
+(the bytes come back intact — see *binary files* below). Non-image uploads are
 rejected with `415`.
 
 > `examples/upload` is the simpler API-Gateway variant of the same flow, with a
 > built-in form at `/tf2wsim/upload`.
+
+### The “Open…” launcher
+
+The Console doesn't know about our website/form routes, so the bridge injects a
+small floating launcher into the Console's page that links to any running sim
+Website and the built-in upload form — no URL-pasting. (It's injected by
+intercepting the Console's `index.html`; the Console UI is otherwise untouched.)
+
+### Binary files (and the download fix)
+
+The sim Bucket stores **UTF-8 text only** — its `get()` uses a *fatal* UTF-8
+decoder, so raw image bytes can't be read back (downloads would fail). The Wing
+Console's own convention is that binary-by-extension files (`.png`, `.jpg`, …)
+are carried as **base64** for both upload and download. So the validator Lambda
+stores the base64 string (which the form already sends), and the Console's
+Download button base64-decodes it back to the exact original bytes.
 
 ### Lambda Function URLs
 

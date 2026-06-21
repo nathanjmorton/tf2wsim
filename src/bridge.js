@@ -170,6 +170,66 @@ function mountBridge(app, getWsimDir, getSelfPort) {
   app.get("/tf2wsim/upload", (req, res) => {
     res.type("html").send(UPLOAD_FORM_HTML);
   });
+
+  // Inject a small floating "Open" launcher into the Console's HTML so the user
+  // can jump to a served Website or the upload form without pasting a URL. The
+  // Console mounts express.static *before* our hook, so a plain app.get("/")
+  // would never fire — we unshift our handler to the front of the router stack.
+  const injectIndex = (req, res, next) => {
+    if (req.method !== "GET") return next();
+    if (req.path !== "/" && req.path !== "/index.html") return next();
+    let html;
+    try {
+      html = fs.readFileSync(consoleIndexPath(), "utf8");
+    } catch {
+      return next();
+    }
+    const sites = websitePaths(getWsimDir());
+    const apis = discoverApis(getWsimDir());
+    const snippet = launcherSnippet(sites, apis);
+    res.type("html").send(html.replace("</body>", snippet + "</body>"));
+  };
+  // Register normally, then move our layer to run *before* the Console's
+  // express.static (mounted before this hook) but *after* express's built-in
+  // `query` + `expressInit` layers (so req.path is populated). We find the
+  // serveStatic layer and splice our layer right before it.
+  app.use(injectIndex);
+  const ours = app._router.stack.pop();
+  const staticIdx = app._router.stack.findIndex((l) => l.name === "serveStatic");
+  const insertAt = staticIdx >= 0 ? staticIdx : app._router.stack.length;
+  app._router.stack.splice(insertAt, 0, ours);
+}
+
+// Path to the Console's static index.html.
+function consoleIndexPath() {
+  const appDist = path.dirname(require.resolve("@wingconsole/app/package.json"));
+  return path.join(appDist, "dist", "vite", "index.html");
+}
+
+// A floating launcher panel (bottom-right) listing websites + the upload form.
+function launcherSnippet(sites, apis) {
+  const links = [];
+  for (const s of sites) {
+    links.push(`<a href="/tf2wsim/site/${encodeURIComponent(s.name)}/" target="_blank">\u{1F310} ${escapeHtml(s.name)}</a>`);
+  }
+  // Offer the built-in upload form if there's at least one Api to target.
+  if (apis.length) {
+    links.push(`<a href="/tf2wsim/upload" target="_blank">\u{2B06}\u{FE0F} Upload form</a>`);
+  }
+  if (links.length === 0) return "";
+  return `
+<div id="tf2wsim-launcher" style="position:fixed;right:14px;bottom:14px;z-index:99999;font-family:system-ui,sans-serif">
+  <details style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.4);font-size:13px">
+    <summary style="cursor:pointer;padding:9px 14px;list-style:none;font-weight:600">\u{1F517} Open\u2026</summary>
+    <div style="display:flex;flex-direction:column;gap:6px;padding:6px 12px 12px">
+      ${links.map((l) => l.replace("<a ", '<a style="color:#7dd3fc;text-decoration:none;white-space:nowrap" ')).join("")}
+    </div>
+  </details>
+</div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 const UPLOAD_FORM_HTML = `<!doctype html><html><head><meta charset="utf-8"/>

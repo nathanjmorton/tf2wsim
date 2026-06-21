@@ -35,8 +35,12 @@ exports.handler = async (req) => {
     // --- store ---
     const key = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const storage = bucket("storage");
-    // Store the raw bytes as a latin1 string so binary survives the sim's text storage.
-    await storage.put(key, bytes.toString("latin1"), { contentType: contentType || "application/octet-stream" });
+    // Store the *base64* string. The sim Bucket only holds UTF-8 text (its get()
+    // uses a fatal UTF-8 decoder, so raw binary can't be read back), and the Wing
+    // Console treats binary-by-extension files (.png/.jpg/...) as base64 for both
+    // upload and download — so storing base64 here makes the Console's Download
+    // button produce the correct, intact image.
+    await storage.put(key, dataBase64, { contentType: contentType || "application/octet-stream" });
     const all = await storage.list();
 
     console.log(`stored ${key} (${bytes.length} bytes); bucket now has ${all.length} object(s)`);
