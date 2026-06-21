@@ -67,6 +67,7 @@ Terraform.
 | `aws_lambda_function` (Node.js) | `cloud.Function` |
 | `aws_sns_topic` | `cloud.Topic` |
 | `aws_secretsmanager_secret` | `cloud.Secret` |
+| `aws_cloudwatch_event_rule` (schedule) | `cloud.Schedule` |
 | `aws_apigatewayv2_api` (HTTP API) | `cloud.Api` |
 | `aws_lambda_function_url` | synthetic `cloud.Api` (catch-all route to the function) |
 | `aws_s3_bucket_website_configuration` (+ `aws_s3_object`) | `cloud.Website` (static files materialized) |
@@ -136,11 +137,16 @@ hanging.
 ## The Builder (Terraform from a canvas)
 
 `tf2wsim builder <outdir>` is the inverse of the translator: a drag-and-drop
-canvas that *generates* Terraform. Drag Bucket / Queue / Function / Topic nodes
-onto the canvas, drag from a publisher's right port to a Function's left port
-to wire a trigger, and edit each Function's handler **inline** (or upload a
-standalone `.js`/`.mjs` file). The default handler takes the event and returns
-an editable default result.
+canvas that *generates* Terraform. Drag **Bucket / Queue / Function / Topic /
+Schedule / Website** nodes onto the canvas, drag from a publisher's right port
+to a Function's left port to wire a trigger, and edit each node in the
+inspector:
+
+- **Function** — handler code **inline** (or upload a `.js`/`.mjs` file), timeout,
+  and a checkbox to expose a **Lambda Function URL** (direct HTTP endpoint).
+- **Schedule** — a cron expression that fires a function on a timer.
+- **Website** — inline `index.html`, served from an S3 website bucket.
+- **Queue** — visibility timeout + retention.
 
 Buttons:
 
@@ -156,23 +162,28 @@ Buttons:
 
 ### Import an existing Terraform config
 
-Point the builder at a directory that already has Terraform and click **Import
-existing**. tf2wsim runs a plan (or reads an existing `plan.json`) and reverses
-it into the builder graph:
+Click **Import existing** to load Terraform into the canvas. By default it reads
+the builder's target directory, but you can type a **different directory** in
+the import box — e.g. point the builder at a fresh `./my-project` while importing
+from `examples/website-upload`. tf2wsim runs a plan (or reads an existing
+`plan.json`) and reverses it into the builder graph:
 
-- `aws_s3_bucket` / `aws_sqs_queue` / `aws_lambda_function` / `aws_sns_topic`
-  become nodes, with their props recovered (queue timeouts, function timeout +
-  env vars);
-- the event wiring (`aws_lambda_event_source_mapping`, SNS subscriptions, …)
-  is reversed into edges;
-- each Lambda's **handler code is read back from disk** (following its
-  `archive_file` source) into the editable inline editor.
+- `aws_s3_bucket` / `aws_sqs_queue` / `aws_lambda_function` / `aws_sns_topic` /
+  `aws_cloudwatch_event_rule` / `aws_s3_bucket_website_configuration` become
+  nodes, with props recovered (queue timeouts, function timeout + env vars,
+  schedule cron);
+- the event wiring (`aws_lambda_event_source_mapping`, SNS subscriptions, S3
+  notifications, EventBridge targets, API routes) is reversed into edges;
+- a Lambda's **handler code is read back from disk** (following its
+  `archive_file` source), a Website's **`index.html` is recovered** from its
+  `aws_s3_object`, and an `aws_lambda_function_url` folds into a **Function URL**
+  checkbox on its function.
 
 Nodes are auto-laid-out in columns (publishers → functions → sinks). Resource
-types the builder can't represent (API Gateway, Function URLs, website configs,
-etc.) are listed in an "Import notes" panel rather than silently dropped. The
-round-trip is faithful: **import → edit → Generate** produces equivalent
-Terraform (the SQS→Lambda mapping, recovered handler code, and props all come
+types the builder still can't represent (e.g. API Gateway, secrets) are listed
+in an "Import notes" panel rather than silently dropped. The round-trip is
+faithful: **import → edit → Generate** produces equivalent Terraform (event
+wiring, recovered handler/HTML, function URLs, and props all come
 back).
 
 Start it from the CLI or the script:

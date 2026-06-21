@@ -20,6 +20,8 @@ const TYPE_TF = {
   queue: "aws_sqs_queue",
   function: "aws_lambda_function",
   topic: "aws_sns_topic",
+  schedule: "aws_cloudwatch_event_rule",
+  website: "aws_s3_bucket_website_configuration",
 };
 
 // A sane default Node handler: receives the event, logs it, returns a default
@@ -136,6 +138,50 @@ function generate(spec) {
           envHcl +
           `\n}`
       );
+      // Optional Lambda Function URL (direct HTTP endpoint, no API Gateway).
+      if (n.props && n.props.functionUrl) {
+        blocks.push(
+          `resource "aws_lambda_function_url" "${name}" {\n` +
+            `  function_name      = aws_lambda_function.${name}.function_name\n` +
+            `  authorization_type = "NONE"\n` +
+            `  cors {\n` +
+            `    allow_origins = ["*"]\n` +
+            `    allow_methods = ["*"]\n` +
+            `  }\n` +
+            `}`
+        );
+      }
+    } else if (n.type === "schedule") {
+      // EventBridge schedule rule. The cron expression triggers a function via
+      // an aws_cloudwatch_event_target edge (added in the wiring loop below).
+      const cron = (n.props && n.props.cron) || "0/5 * * * ? *";
+      blocks.push(
+        `resource "aws_cloudwatch_event_rule" "${name}" {\n` +
+          `  name                = ${hclString(name + "-rule")}\n` +
+          `  schedule_expression = "cron(${cron})"\n` +
+          `}`
+      );
+    } else if (n.type === "website") {
+      // S3 static website: a bucket + website configuration + an index.html
+      // object materialized from the node's inline HTML.
+      const htmlFile = `site/${name}/index.html`;
+      files[htmlFile] = n.code && n.code.trim() ? n.code : defaultWebsiteHtml(name);
+      blocks.push(
+        `resource "aws_s3_bucket" "${name}" {\n` +
+          `  bucket        = ${hclString(name + "-site")}\n` +
+          `  force_destroy = true\n` +
+          `}\n\n` +
+          `resource "aws_s3_bucket_website_configuration" "${name}" {\n` +
+          `  bucket = aws_s3_bucket.${name}.id\n` +
+          `  index_document {\n    suffix = "index.html"\n  }\n` +
+          `}\n\n` +
+          `resource "aws_s3_object" "${name}_index" {\n` +
+          `  bucket       = aws_s3_bucket.${name}.id\n` +
+          `  key          = "index.html"\n` +
+          `  source       = "\${path.module}/${htmlFile}"\n` +
+          `  content_type = "text/html"\n` +
+          `}`
+      );
     } else {
       warnings.push(`Unknown node type "${n.type}" (node ${n.id}) — skipped.`);
     }
@@ -146,6 +192,7 @@ function generate(spec) {
   let esmCount = 0;
   let snsCount = 0;
   let s3Count = 0;
+  let schedCount = 0;
   for (const e of edges) {
     const src = byId[e.source];
     const tgt = byId[e.target];
@@ -185,6 +232,13 @@ function generate(spec) {
           `}`
       );
       s3Count++;
+    } else if (src.type === "schedule") {
+      blocks.push(
+        `resource "aws_cloudwatch_event_target" "sched_${schedCount++}" {\n` +
+          `  rule = aws_cloudwatch_event_rule.${s}.name\n` +
+          `  arn  = aws_lambda_function.${t}.arn\n` +
+          `}`
+      );
     } else {
       warnings.push(
         `Edge ${e.source}→${e.target} ignored: ${src.type} cannot trigger a function.`
@@ -196,4 +250,11 @@ function generate(spec) {
   return { files, warnings };
 }
 
-module.exports = { generate, defaultHandlerCode, TYPE_TF };
+function defaultWebsiteHtml(name) {
+  return (
+    `<!doctype html>\n<meta charset="utf-8"/>\n<title>${name}</title>\n` +
+    `<h1>${name}</h1>\n<p>Served from an S3 website bucket.</p>\n`
+  );
+}
+
+module.exports = { generate, defaultHandlerCode, defaultWebsiteHtml, TYPE_TF };

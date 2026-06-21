@@ -24,10 +24,33 @@ const TF_TO_NODE = {
   aws_sqs_queue: "queue",
   aws_lambda_function: "function",
   aws_sns_topic: "topic",
+  aws_cloudwatch_event_rule: "schedule",
+  aws_s3_bucket_website_configuration: "website",
 };
 
 // Roles drive column placement in the canvas.
-const ROLE = { bucket: "sink", queue: "publisher", topic: "publisher", function: "function" };
+const ROLE = {
+  bucket: "sink",
+  queue: "publisher",
+  topic: "publisher",
+  schedule: "publisher",
+  website: "sink",
+  function: "function",
+};
+
+// aws_* types we knowingly fold into other nodes/edges, so we don't warn about
+// them as "not representable" (they ARE represented — just not as their own node).
+const FOLDED_TYPES = new Set([
+  "aws_lambda_event_source_mapping",
+  "aws_sns_topic_subscription",
+  "aws_s3_bucket_notification",
+  "aws_cloudwatch_event_target",
+  "aws_apigatewayv2_api",
+  "aws_apigatewayv2_integration",
+  "aws_apigatewayv2_route",
+  "aws_lambda_function_url",
+  "aws_s3_object",
+]);
 
 // Find the handler source file for a lambda by walking the archive_file data
 // source it references (TF's common zip pattern), then reading it from disk.
@@ -65,6 +88,39 @@ function recoverHandlerCode(fnTf, dataResources, rawConfigRefs, tfDir) {
   }
 }
 
+// Recover a website's index.html from the aws_s3_object that targets the same
+// bucket as the website configuration. Reads the object's `source` file (or its
+// inline `content`) the same way the forward website materializer does.
+function recoverWebsiteHtml(cfgTf, allResources, rawConfigRefs, tfDir) {
+  // Which bucket does the website config target?
+  const cfgRefs = rawConfigRefs[cfgTf.address] || [];
+  let bucketAddr = null;
+  for (const r of cfgRefs) {
+    const m = r.match(/^aws_s3_bucket\.([A-Za-z0-9_]+)/);
+    if (m) bucketAddr = "aws_s3_bucket." + m[1];
+  }
+  if (!bucketAddr) return null;
+  // Find an aws_s3_object with key index.html targeting that bucket.
+  for (const obj of allResources) {
+    if (obj.type !== "aws_s3_object") continue;
+    const objRefs = rawConfigRefs[obj.address] || [];
+    const targetsBucket = objRefs.some((r) => r.startsWith(bucketAddr));
+    if (!targetsBucket) continue;
+    const v = obj.values || {};
+    if (v.key && v.key !== "index.html") continue;
+    if (typeof v.content === "string") return v.content;
+    if (typeof v.source === "string") {
+      const abs = path.isAbsolute(v.source) ? v.source : path.join(tfDir || process.cwd(), v.source);
+      try {
+        return fs.readFileSync(abs, "utf8");
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 // Extract builder props for a resource from its TF values.
 function extractProps(nodeType, values = {}) {
   if (nodeType === "queue") {
@@ -85,6 +141,12 @@ function extractProps(nodeType, values = {}) {
       ...(values.timeout != null ? { timeout: values.timeout } : {}),
       ...(Object.keys(env).length ? { env } : {}),
     };
+  }
+  if (nodeType === "schedule") {
+    // schedule_expression looks like "cron(0/5 * * * ? *)" or "rate(5 minutes)".
+    const expr = values.schedule_expression || "";
+    const m = /^cron\((.*)\)$/.exec(expr);
+    return m ? { cron: m[1] } : expr ? { cron: expr } : {};
   }
   return {};
 }
@@ -138,6 +200,9 @@ function importPlan(tfJson, { tfDir } = {}) {
         );
       }
     }
+    if (nodeType === "website") {
+      node.code = recoverWebsiteHtml(tf, resources, rawConfigRefs, tfDir) || "";
+    }
     nodes.push(node);
   }
 
@@ -150,12 +215,28 @@ function importPlan(tfJson, { tfDir } = {}) {
     if (source && target) edges.push({ source, target });
   }
 
-  // Note unsupported-but-present resources so the user knows what wasn't imported.
-  const supported = new Set(Object.keys(TF_TO_NODE));
-  const unsupported = [...new Set(resources.filter((r) => !supported.has(r.type)).map((r) => r.type))];
+  // Fold aws_lambda_function_url back into a `functionUrl` flag on its function.
+  const nodeByAddress = {};
+  for (const tf of resources) {
+    if (idByAddress[tf.address]) {
+      nodeByAddress[tf.address] = nodes.find((n) => n.id === idByAddress[tf.address]);
+    }
+  }
+  for (const tf of resources) {
+    if (tf.type !== "aws_lambda_function_url") continue;
+    const fnRef = (rawConfigRefs[tf.address] || []).find((r) => /^aws_lambda_function\./.test(r));
+    const fnAddr = fnRef && fnRef.split(".").slice(0, 2).join(".");
+    const fnNode = fnAddr && nodeByAddress[fnAddr];
+    if (fnNode) fnNode.props.functionUrl = true;
+  }
+
+  // Note resources we couldn't represent at all (everything except types we map
+  // to nodes, fold into edges/flags, or knowingly absorb).
+  const known = new Set([...Object.keys(TF_TO_NODE), ...FOLDED_TYPES]);
+  const unsupported = [...new Set(resources.filter((r) => !known.has(r.type)).map((r) => r.type))];
   if (unsupported.length) {
     warnings.push(
-      `Imported the supported resources; these types aren't representable in the builder and were left out: ${unsupported.join(", ")}.`
+      `These resource types aren't representable in the builder and were left out: ${unsupported.join(", ")}.`
     );
   }
 

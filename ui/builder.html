@@ -9,6 +9,7 @@
     --bg:#0f172a; --panel:#1e293b; --panel2:#334155; --line:#475569;
     --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#22c55e;
     --bucket:#f97316; --queue:#10b981; --function:#38bdf8; --topic:#a78bfa;
+    --schedule:#eab308; --website:#ec4899;
   }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
@@ -58,6 +59,8 @@
     <h1>tf2wsim · Terraform Builder</h1>
     <span class="sp"></span>
     <span id="target" class="hint"></span>
+    <input id="import-dir" placeholder="import from dir (default: target)"
+      style="background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:6px 9px;width:230px;font:inherit"/>
     <button id="import">Import existing</button>
     <button id="clear">Clear</button>
     <button id="generate">Generate Terraform</button>
@@ -70,6 +73,8 @@
     <div class="pal-item" draggable="true" data-type="queue"><span class="dot" style="background:var(--queue)"></span>SQS Queue</div>
     <div class="pal-item" draggable="true" data-type="function"><span class="dot" style="background:var(--function)"></span>Lambda Function</div>
     <div class="pal-item" draggable="true" data-type="topic"><span class="dot" style="background:var(--topic)"></span>SNS Topic</div>
+    <div class="pal-item" draggable="true" data-type="schedule"><span class="dot" style="background:var(--schedule)"></span>Schedule (cron)</div>
+    <div class="pal-item" draggable="true" data-type="website"><span class="dot" style="background:var(--website)"></span>S3 Website</div>
     <div class="hint">
       Drag the ● <b>right port</b> of a Bucket / Queue / Topic onto a Function's
       ● <b>left port</b> to wire a trigger.<br><br>
@@ -98,6 +103,8 @@ const TYPES = {
   queue:    { label:"SQS Queue",       color:"var(--queue)",    pub:true,  fn:false },
   function: { label:"Lambda Function", color:"var(--function)",  pub:false, fn:true  },
   topic:    { label:"SNS Topic",       color:"var(--topic)",    pub:true,  fn:false },
+  schedule: { label:"Schedule (cron)", color:"var(--schedule)",  pub:true,  fn:false },
+  website:  { label:"S3 Website",      color:"var(--website)",   pub:false, fn:false },
 };
 
 const state = { nodes: [], edges: [], selected: null, seq: 1 };
@@ -257,8 +264,17 @@ function renderInspector(n){
   }
   if (n.type==="function"){
     html += `<div class="field"><label>Timeout (s)</label><input id="f-to" type="number" value="${n.props.timeout||30}"></div>`;
+    html += `<div class="field"><label><input id="f-url" type="checkbox" ${n.props.functionUrl?"checked":""}/> Expose a Lambda Function URL (direct HTTP endpoint)</label></div>`;
     html += `<div class="field"><label>Handler code (exports.handler)</label><textarea id="f-code" spellcheck="false">${escapeHtml(n.code || defaultCode(n.name))}</textarea></div>`;
     html += `<div class="hint">Upload an ESM/CJS file: <input id="f-file" type="file" accept=".js,.mjs,.cjs"></div>`;
+  }
+  if (n.type==="schedule"){
+    html += `<div class="field"><label>Cron expression</label><input id="f-cron" value="${escapeHtml(n.props.cron||"0/5 * * * ? *")}"></div>`;
+    html += `<div class="hint">Drag this node's right port onto a Function to run it on schedule.</div>`;
+  }
+  if (n.type==="website"){
+    html += `<div class="field"><label>index.html</label><textarea id="f-html" spellcheck="false" style="min-height:240px">${escapeHtml(n.code || defaultHtml(n.name))}</textarea></div>`;
+    html += `<div class="hint">Served from an S3 website bucket.</div>`;
   }
   inspector.body.innerHTML = html;
   const bind = (id, fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener("input", fn); };
@@ -266,7 +282,11 @@ function renderInspector(n){
   bind("f-vis", e=>{ n.props.visibilityTimeout=+e.target.value; });
   bind("f-ret", e=>{ n.props.retention=+e.target.value; });
   bind("f-to", e=>{ n.props.timeout=+e.target.value; });
+  bind("f-cron", e=>{ n.props.cron=e.target.value; });
+  bind("f-html", e=>{ n.code=e.target.value; });
   bind("f-code", e=>{ n.code=e.target.value; });
+  const urlCb=document.getElementById("f-url");
+  if (urlCb) urlCb.addEventListener("change", e=>{ n.props.functionUrl=e.target.checked; });
   const file = document.getElementById("f-file");
   if (file) file.addEventListener("change", async e=>{
     const f = e.target.files[0]; if(!f) return;
@@ -276,6 +296,9 @@ function renderInspector(n){
 }
 function defaultCode(name){
   return `// Handler for ${name}. Receives the trigger event and returns a result.\nexports.handler = async (event) => {\n  console.log(${JSON.stringify(name)}, "received:", JSON.stringify(event));\n  return { ok: true };\n};\n`;
+}
+function defaultHtml(name){
+  return `<!doctype html>\n<meta charset="utf-8"/>\n<title>${name}</title>\n<h1>${name}</h1>\n<p>Edit this HTML in the inspector. It's served from an S3 website bucket.</p>\n`;
 }
 
 // ---- generate ----
@@ -304,7 +327,8 @@ document.getElementById("import").addEventListener("click", async ()=>{
   const btn=document.getElementById("import");
   btn.disabled=true; const orig=btn.textContent; btn.textContent="Importing…";
   try{
-    const r=await fetch("/api/import",{method:"POST"});
+    const dir=document.getElementById("import-dir").value.trim();
+    const r=await fetch("/api/import",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(dir?{dir}:{})});
     const data=await r.json();
     if(!data.ok) { toast("Import failed: "+(data.error||""), true); return; }
     if(!(data.nodes&&data.nodes.length)){ toast((data.warnings&&data.warnings[0])||"Nothing to import.", true); }

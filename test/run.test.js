@@ -191,8 +191,11 @@ async function main() {
         assert.strictEqual(edges.length, 1);
         assert.strictEqual(edges[0].source, byType.queue.id);
         assert.strictEqual(edges[0].target, byType.function.id);
-        // event_source_mapping isn't a builder node -> noted, not imported
-        assert.ok(warnings.some((w) => /aws_lambda_event_source_mapping/.test(w)));
+        // event_source_mapping is folded into the edge (not a dropped warning)
+        assert.ok(
+          !warnings.some((w) => /aws_lambda_event_source_mapping/.test(w)),
+          "event_source_mapping should be folded, not warned about"
+        );
       });
 
       await test("recovers the lambda handler source code from disk", () => {
@@ -216,6 +219,22 @@ async function main() {
         // recovered handler code is carried back into a source file
         const handler = Object.entries(files).find(([k]) => /^src\/.*\.js$/.test(k));
         assert.ok(handler && handler[1].includes("exports.handler"));
+      });
+    }
+
+    // The website-upload example exercises website + function URL import.
+    const siteDir2 = path.join(__dirname, "..", "examples", "website-upload");
+    const sitePlan2 = path.join(siteDir2, "plan.json");
+    if (fs.existsSync(sitePlan2)) {
+      await test("imports website + function-URL flag, recovers website HTML", () => {
+        const tfJson = JSON.parse(fs.readFileSync(sitePlan2, "utf8"));
+        const { nodes, warnings } = importPlan(tfJson, { tfDir: siteDir2 });
+        const fn = nodes.find((n) => n.type === "function");
+        const site = nodes.find((n) => n.type === "website");
+        assert.ok(fn && fn.props.functionUrl === true, "function URL flag recovered");
+        assert.ok(site && /Upload an image/.test(site.code), "website HTML recovered");
+        // function URL, website config, s3_object are all folded -> no warnings
+        assert.strictEqual(warnings.length, 0, `expected clean import, got: ${warnings.join(" | ")}`);
       });
     }
   }
@@ -259,6 +278,23 @@ async function main() {
         edges: [{ source: "a", target: "b" }],
       });
       assert.ok(warnings.some((w) => /must be a function/.test(w)));
+    });
+
+    await test("emits schedule, function URL, and website resources", () => {
+      const { files, warnings } = generate({
+        nodes: [
+          { id: "s", type: "schedule", name: "Tick", props: { cron: "0/5 * * * ? *" } },
+          { id: "f", type: "function", name: "Worker", props: { functionUrl: true }, code: "" },
+          { id: "w", type: "website", name: "Site", code: "<h1>hi</h1>" },
+        ],
+        edges: [{ source: "s", target: "f" }],
+      });
+      assert.strictEqual(warnings.length, 0);
+      assert.ok(files["main.tf"].includes('resource "aws_cloudwatch_event_rule" "tick"'));
+      assert.ok(files["main.tf"].includes('resource "aws_lambda_function_url" "worker"'));
+      assert.ok(files["main.tf"].includes('resource "aws_s3_bucket_website_configuration" "site"'));
+      assert.ok(files["main.tf"].includes('resource "aws_cloudwatch_event_target"'), "schedule edge");
+      assert.strictEqual(files["site/site/index.html"], "<h1>hi</h1>");
     });
 
     await test("deduplicates colliding sanitized names", () => {

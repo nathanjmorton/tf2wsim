@@ -201,27 +201,39 @@ function startBuilder({ outDir, port = 3100, consolePort = 3000 }) {
         });
       }
       if (req.method === "POST" && req.url === "/api/import") {
-        // Import the target dir's existing Terraform into the builder graph.
-        // If the dir has a .tf, run a plan; if it already has plan.json, use it.
-        const planJson = path.join(resolvedOut, "plan.json");
+        // Import an existing Terraform config into the builder graph. The source
+        // directory defaults to the builder's target, but the UI can pass a
+        // different `dir` (absolute, or relative to the target) to import from
+        // anywhere — e.g. iterate on examples/basic while writing to ./my-project.
+        const body = await readBody(req);
+        let srcDir = resolvedOut;
+        if (body && body.dir) {
+          srcDir = path.isAbsolute(body.dir)
+            ? body.dir
+            : path.resolve(resolvedOut, body.dir);
+        }
+        if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
+          return sendJson(res, 400, { ok: false, error: `not a directory: ${srcDir}` });
+        }
+        const planJson = path.join(srcDir, "plan.json");
         let tfJson;
         if (fs.existsSync(planJson)) {
           tfJson = JSON.parse(fs.readFileSync(planJson, "utf8"));
         } else {
-          const hasTf = fs.readdirSync(resolvedOut).some((f) => f.endsWith(".tf"));
+          const hasTf = fs.readdirSync(srcDir).some((f) => f.endsWith(".tf"));
           if (!hasTf) {
-            return sendJson(res, 200, { ok: true, nodes: [], edges: [], warnings: ["Target directory has no .tf files to import."] });
+            return sendJson(res, 200, { ok: true, nodes: [], edges: [], warnings: [`No .tf files (or plan.json) found in ${srcDir}.`] });
           }
-          if (!fs.existsSync(path.join(resolvedOut, ".terraform"))) {
-            await execFileP("terraform", [`-chdir=${resolvedOut}`, "init", "-input=false"]);
+          if (!fs.existsSync(path.join(srcDir, ".terraform"))) {
+            await execFileP("terraform", [`-chdir=${srcDir}`, "init", "-input=false"]);
           }
-          await execFileP("terraform", [`-chdir=${resolvedOut}`, "plan", "-out", "tf2wsim.plan", "-input=false"]);
-          const out = await execFileP("terraform", [`-chdir=${resolvedOut}`, "show", "-json", "tf2wsim.plan"]);
-          try { fs.unlinkSync(path.join(resolvedOut, "tf2wsim.plan")); } catch {}
+          await execFileP("terraform", [`-chdir=${srcDir}`, "plan", "-out", "tf2wsim.plan", "-input=false"]);
+          const out = await execFileP("terraform", [`-chdir=${srcDir}`, "show", "-json", "tf2wsim.plan"]);
+          try { fs.unlinkSync(path.join(srcDir, "tf2wsim.plan")); } catch {}
           tfJson = JSON.parse(out.stdout.toString());
         }
-        const { nodes, edges, warnings } = importPlan(tfJson, { tfDir: resolvedOut });
-        return sendJson(res, 200, { ok: true, nodes, edges, warnings });
+        const { nodes, edges, warnings } = importPlan(tfJson, { tfDir: srcDir });
+        return sendJson(res, 200, { ok: true, nodes, edges, warnings, sourceDir: srcDir });
       }
       if (req.method === "POST" && req.url === "/api/launch") {
         const spec = await readBody(req);

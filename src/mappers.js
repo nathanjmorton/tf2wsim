@@ -68,6 +68,27 @@ function mapSecret(tf) {
   return { type: WING_TYPES.SECRET, props: { name: v.name || tf.name } };
 }
 
+// aws_cloudwatch_event_rule (schedule_expression) -> cloud.Schedule
+function mapSchedule(tf) {
+  const v = tf.values || {};
+  // schedule_expression is "cron(...)" or "rate(...)". The sim Schedule parses
+  // with cron-parser, which wants *standard 5-field* cron — not AWS's 6-field
+  // form (which has a Year field and uses '?'). Convert.
+  const expr = v.schedule_expression || "";
+  const m = /^cron\((.*)\)$/.exec(expr);
+  const cronExpression = m ? awsCronToStandard(m[1]) : "0/5 * * * *";
+  return { type: WING_TYPES.SCHEDULE, props: { cronExpression } };
+}
+
+// AWS cron (minute hour day-of-month month day-of-week year) -> standard cron
+// (minute hour day-of-month month day-of-week). Drops the year field and maps
+// '?' (AWS "no specific value") to '*'.
+function awsCronToStandard(aws) {
+  const parts = aws.trim().split(/\s+/);
+  const five = parts.length >= 6 ? parts.slice(0, 5) : parts.slice(0, 5);
+  return five.map((p) => (p === "?" ? "*" : p)).join(" ");
+}
+
 // aws_apigatewayv2_api (HTTP API) -> cloud.Api
 // The sim Api needs an openApiSpec; routes are attached later as event
 // subscriptions (see edges.js / wiring.js), so a minimal spec is enough here.
@@ -96,6 +117,7 @@ const MAPPERS = {
   aws_sns_topic: mapTopic,
   aws_secretsmanager_secret: mapSecret,
   aws_apigatewayv2_api: mapApi,
+  aws_cloudwatch_event_rule: mapSchedule,
 };
 
 function mapResource(tf) {
