@@ -156,7 +156,8 @@ async function cmdBuilder(args) {
   console.log(`\u2713 tf2wsim builder`);
   console.log(`  target dir: ${outDir}`);
   console.log(`  open: http://localhost:${actual}/`);
-  console.log(`  Drag a graph, then click "Init & Open Console" to simulate it.`);
+  console.log(`  Drag a graph (or "Import existing" to load the target's Terraform),`);
+  console.log(`  then click "Init & Open Console" to simulate it.`);
   process.stdin.resume();
 }
 

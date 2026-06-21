@@ -173,6 +173,53 @@ async function main() {
     });
   }
 
+  console.log("import (terraform -> builder graph):");
+  {
+    const { importPlan } = require("../src/import");
+    const basicDir = path.join(__dirname, "..", "examples", "basic");
+    const basicPlan = path.join(basicDir, "plan.json");
+    if (fs.existsSync(basicPlan)) {
+      await test("imports an existing config into nodes + edges (with props)", () => {
+        const tfJson = JSON.parse(fs.readFileSync(basicPlan, "utf8"));
+        const { nodes, edges, warnings } = importPlan(tfJson, { tfDir: basicDir });
+        const byType = Object.fromEntries(nodes.map((n) => [n.type, n]));
+        assert.ok(byType.queue && byType.function && byType.bucket, "queue/function/bucket imported");
+        assert.strictEqual(byType.queue.props.visibilityTimeout, 45, "queue timeout recovered");
+        assert.strictEqual(byType.function.props.timeout, 30, "function timeout recovered");
+        assert.strictEqual(byType.function.props.env.STAGE, "dev", "function env recovered");
+        // the SQS->Lambda event mapping should reverse into one edge
+        assert.strictEqual(edges.length, 1);
+        assert.strictEqual(edges[0].source, byType.queue.id);
+        assert.strictEqual(edges[0].target, byType.function.id);
+        // event_source_mapping isn't a builder node -> noted, not imported
+        assert.ok(warnings.some((w) => /aws_lambda_event_source_mapping/.test(w)));
+      });
+
+      await test("recovers the lambda handler source code from disk", () => {
+        const tfJson = JSON.parse(fs.readFileSync(basicPlan, "utf8"));
+        const { nodes } = importPlan(tfJson, { tfDir: basicDir });
+        const fn = nodes.find((n) => n.type === "function");
+        assert.ok(fn.code && fn.code.includes("exports.handler"), "handler code recovered");
+      });
+
+      await test("import -> generate round-trips to equivalent resources", () => {
+        const { generate } = require("../src/generate");
+        const tfJson = JSON.parse(fs.readFileSync(basicPlan, "utf8"));
+        const spec = importPlan(tfJson, { tfDir: basicDir });
+        const { files } = generate(spec);
+        const tf = files["main.tf"];
+        assert.ok(/resource "aws_sqs_queue"/.test(tf));
+        assert.ok(/resource "aws_lambda_function"/.test(tf));
+        assert.ok(/resource "aws_s3_bucket"/.test(tf));
+        // the queue->function edge becomes an event source mapping again
+        assert.ok(/aws_lambda_event_source_mapping/.test(tf));
+        // recovered handler code is carried back into a source file
+        const handler = Object.entries(files).find(([k]) => /^src\/.*\.js$/.test(k));
+        assert.ok(handler && handler[1].includes("exports.handler"));
+      });
+    }
+  }
+
   console.log("generate (builder -> terraform):");
   {
     const { generate } = require("../src/generate");

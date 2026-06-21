@@ -58,6 +58,7 @@
     <h1>tf2wsim · Terraform Builder</h1>
     <span class="sp"></span>
     <span id="target" class="hint"></span>
+    <button id="import">Import existing</button>
     <button id="clear">Clear</button>
     <button id="generate">Generate Terraform</button>
     <button id="launch" class="primary">Init &amp; Open Console</button>
@@ -278,11 +279,50 @@ function defaultCode(name){
 }
 
 // ---- generate ----
-document.getElementById("clear").addEventListener("click", ()=>{
+document.getElementById("clear").addEventListener("click", clearCanvas);
+function clearCanvas(){
   state.nodes=[]; state.edges=[]; state.selected=null;
   document.querySelectorAll(".node").forEach(el=>el.remove());
   drawEdges(); select(null);
+}
+
+// Load a {nodes, edges} spec onto the canvas (replaces current graph).
+function loadSpec(spec){
+  clearCanvas();
+  let maxSeq=0;
+  for(const sn of spec.nodes||[]){
+    const n={ id:sn.id, type:sn.type, name:sn.name, x:sn.x!=null?sn.x:120, y:sn.y!=null?sn.y:80, props:sn.props||{}, code:sn.code||"" };
+    state.nodes.push(n); renderNode(n);
+    const m=/^n(\d+)$/.exec(sn.id); if(m) maxSeq=Math.max(maxSeq,+m[1]);
+  }
+  state.seq=maxSeq+1;
+  for(const e of spec.edges||[]) state.edges.push({ source:e.source, target:e.target });
+  drawEdges(); select(null);
+}
+
+document.getElementById("import").addEventListener("click", async ()=>{
+  const btn=document.getElementById("import");
+  btn.disabled=true; const orig=btn.textContent; btn.textContent="Importing…";
+  try{
+    const r=await fetch("/api/import",{method:"POST"});
+    const data=await r.json();
+    if(!data.ok) { toast("Import failed: "+(data.error||""), true); return; }
+    if(!(data.nodes&&data.nodes.length)){ toast((data.warnings&&data.warnings[0])||"Nothing to import.", true); }
+    else {
+      loadSpec(data);
+      let msg=`Imported ${data.nodes.length} resource(s)`;
+      if(data.warnings&&data.warnings.length) msg+=` — ${data.warnings.length} note(s)`;
+      toast(msg);
+      if(data.warnings&&data.warnings.length) showImportNotes(data.warnings);
+    }
+  }catch(err){ toast("Import failed: "+err.message, true); }
+  finally{ btn.disabled=false; btn.textContent=orig; }
 });
+function showImportNotes(warnings){
+  inspector.empty.style.display="none"; inspector.body.style.display="";
+  inspector.body.innerHTML=`<h2 style="margin-top:0">Import notes</h2>`+
+    `<div class="hint">${warnings.map(escapeHtml).join("<br><br>")}</div>`;
+}
 function currentSpec(){
   return { nodes: state.nodes.map(n=>({ id:n.id, type:n.type, name:n.name, props:n.props, code:n.code })), edges: state.edges };
 }

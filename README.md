@@ -142,14 +142,38 @@ to wire a trigger, and edit each Function's handler **inline** (or upload a
 standalone `.js`/`.mjs` file). The default handler takes the event and returns
 an editable default result.
 
-Two buttons:
+Buttons:
 
+- **Import existing** loads the target directory's *existing* Terraform into the
+  canvas, so you can iterate on a setup instead of starting from scratch (see
+  below).
 - **Generate Terraform** writes `main.tf` plus one `src/<name>.js` per function
   into the target directory (and previews the generated `main.tf`).
 - **Init & Open Console** does the whole loop for you — generate →
   `terraform init` (first time only) → start the Wing Console on the project →
   open it in a new tab once the simulator is up. The inspector shows live
   progress through each phase, and surfaces any `terraform` error inline.
+
+### Import an existing Terraform config
+
+Point the builder at a directory that already has Terraform and click **Import
+existing**. tf2wsim runs a plan (or reads an existing `plan.json`) and reverses
+it into the builder graph:
+
+- `aws_s3_bucket` / `aws_sqs_queue` / `aws_lambda_function` / `aws_sns_topic`
+  become nodes, with their props recovered (queue timeouts, function timeout +
+  env vars);
+- the event wiring (`aws_lambda_event_source_mapping`, SNS subscriptions, …)
+  is reversed into edges;
+- each Lambda's **handler code is read back from disk** (following its
+  `archive_file` source) into the editable inline editor.
+
+Nodes are auto-laid-out in columns (publishers → functions → sinks). Resource
+types the builder can't represent (API Gateway, Function URLs, website configs,
+etc.) are listed in an "Import notes" panel rather than silently dropped. The
+round-trip is faithful: **import → edit → Generate** produces equivalent
+Terraform (the SQS→Lambda mapping, recovered handler code, and props all come
+back).
 
 Start it from the CLI or the script:
 
@@ -331,6 +355,7 @@ src/
   synth.js      orchestrates the above -> .wsim directory
   console.js    boots the Wing Console (compiler intercept, progress, lock reclaim)
   generate.js   inverse: builder graph -> Terraform config + handler files
+  import.js     inverse: existing Terraform -> builder graph (recovers handler code)
   builder.js    HTTP server hosting the drag-and-drop builder UI
   tokens.js     wsim token + address helpers
   constants.js  Wing type FQN / classname / inflight-file tables
